@@ -166,6 +166,24 @@ def build_missing_fields_prompt(doc_type: str, current_data: dict, schema: dict)
                         all_required.append((sec_title, label, key))
                         if not current_data.get(key) or current_data.get(key) in (None, "", [], {}):
                             unfilled_required.append((sec_title, label, key))
+    elif isinstance(sections, list):
+        for sec in sections:
+            sec_title = sec.get("title", sec.get("id", ""))
+            for f in sec.get("fields", []):
+                if f.get("required"):
+                    key = f.get("key", "")
+                    label = f.get("label", key)
+                    all_required.append((sec_title, label, key))
+                    if not current_data.get(key) or current_data.get(key) in (None, "", [], {}):
+                        unfilled_required.append((sec_title, label, key))
+            for sub in sec.get("subsections", []):
+                for f in sub.get("fields", []):
+                    if f.get("required"):
+                        key = f.get("key", "")
+                        label = f.get("label", key)
+                        all_required.append((sec_title, label, key))
+                        if not current_data.get(key) or current_data.get(key) in (None, "", [], {}):
+                            unfilled_required.append((sec_title, label, key))
 
     total_required = len(all_required)
     missing_count = len(unfilled_required)

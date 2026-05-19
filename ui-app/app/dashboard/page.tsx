@@ -510,11 +510,67 @@ export default function DashboardPage() {
       setIrsSelections(newIrsSelections);
       setCurrentStep(0);
       setPage('form');
-      showToast(`✅ AI extracted ${Object.keys(extracted).length} fields`);
+
+      // Assemble the data object manually since React state isn't flushed yet
+      const assembledData: Record<string, unknown> = {};
+      if (docType === 'irs') Object.assign(assembledData, newIrsSelections);
+      if (docType === 'equity_trs' && newIrsSelections.model_type) assembledData.model_type = newIrsSelections.model_type;
+      for (const [k, v] of Object.entries(newStepData)) {
+        if (!k.startsWith('__rep_')) assembledData[k] = v;
+      }
+      for (const [k, v] of Object.entries(newStepData)) {
+        if (!k.startsWith('__rep_')) continue;
+        const realKey = k.replace('__rep_', '');
+        if (Array.isArray(v) && v.length > 0) {
+          if (typeof v[0] === 'string') {
+            assembledData[realKey] = (v as string[]).filter(s => s.trim());
+          } else {
+            assembledData[realKey] = (v as Array<{ title: string; description: string }>)
+              .filter(p => p.title.trim() || p.description.trim());
+          }
+        } else { assembledData[realKey] = []; }
+      }
+
+      // Automatically save as draft immediately
+      let summary = '';
+      if (docType === 'fx_ndf') summary = `${assembledData.reference_currency || '?'}/${assembledData.settlement_currency || '?'} — ${assembledData.notional_amount || ''}`;
+      else if (docType === 'cds') summary = `${assembledData.reference_entity || '?'} — ${assembledData.notional_amount || ''} @ ${assembledData.fixed_rate || '?'}bps`;
+      else if (docType === 'equity_trs') summary = `Model ${assembledData.model_type || '?'} — ${assembledData.party_a_name || ''} vs ${assembledData.party_b_name || ''}`;
+      else summary = `Exhibit ${(assembledData.exhibit as string) || '?'} — ${assembledData.party_a_name || ''} vs ${assembledData.party_b_name || ''}`;
+
+      try {
+        const payload: Record<string, unknown> = {
+          doc_type: docType,
+          name: schema.name,
+          icon: schema.icon || '📄',
+          summary,
+          ai_created: true,
+          data: assembledData,
+          is_draft: true
+        };
+        if (aiEmailText) { payload.source_email = aiEmailText; }
+
+        const r = await fetch(`${API}/api/documents`, {
+          method: 'POST',
+          headers: authHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify(payload),
+        });
+        if (r.ok) {
+          const saved = await r.json();
+          setEditingDocId(saved._id);
+          showToast(`✅ AI extracted & autosaved ${Object.keys(extracted).length} fields`);
+          fetchRecentDocs();
+        } else {
+          showToast(`✅ AI extracted ${Object.keys(extracted).length} fields`);
+        }
+      } catch (e) {
+        console.error('Autosave failed:', e);
+        showToast(`✅ AI extracted ${Object.keys(extracted).length} fields`);
+      }
     } catch {
       hideLoading(); showToast('❌ Server error');
     }
-  }, [aiEmailText, schemas, showToast]);
+  }, [aiEmailText, schemas, showToast, fetchRecentDocs]);
 
   const selectType = useCallback((id: string) => {
     const schema = schemas[id];

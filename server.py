@@ -401,9 +401,8 @@ def _build_chat_prompt(user_msg: str, history: list[dict]) -> str:
     prompt += "While you specialize in TradeDoc AI (derivatives like IRS, CDS, FX NDF, Equity TRS), you are happy to help with general questions too. "
     prompt += "Be conversational, friendly, and smart. "
     prompt += "CRITICAL NAVIGATION RULES:\n"
-    prompt += "1. If the user mentions 'manual', 'form', 'create', or 'entry', YOU MUST use the 'form-' tokens (e.g., [NAVIGATE:form-irs]).\n"
-    prompt += "2. If the user mentions 'extract', 'upload', 'file', or 'AI extraction', use the 'ai' token (e.g., [NAVIGATE:ai]).\n"
-    prompt += "3. If the user's request is ONLY navigation, respond ONLY with the token.\n\n"
+    prompt += "1. If the user mentions 'extract', 'upload', 'file', or 'AI extraction', use the 'ai' token (e.g., [NAVIGATE:ai]).\n"
+    prompt += "2. If the user's request is ONLY navigation, respond ONLY with the token.\n\n"
     prompt += "Possible page names and their meanings:\n"
     prompt += "- landing: Home, Dashboard, Overview\n"
     prompt += "- analytics: Charts, Performance, Analytics, Stats\n"
@@ -412,11 +411,7 @@ def _build_chat_prompt(user_msg: str, history: list[dict]) -> str:
     prompt += "- settings-preference: Preferences, Model selection\n"
     prompt += "- settings-password: Password, Security\n"
     prompt += "- my-documents: My Documents, History, Saved Trades\n"
-    prompt += "- form-fx_ndf: Manual FX NDF form, Create FX trade\n"
-    prompt += "- form-irs: Manual Interest Rate Swap form, Create IRS trade\n"
-    prompt += "- form-cds: Manual Credit Default Swap form, Create CDS trade\n"
-    prompt += "- form-equity_trs: Manual Equity TRS form, Create TRS trade\n"
-    prompt += "Example: [NAVIGATE:form-irs]\n\n"
+    prompt += "Example: [NAVIGATE:analytics]\n\n"
 
     for msg in history:
         role = "User" if msg.get("role") == "user" else "Assistant"
@@ -452,7 +447,9 @@ def _extract_chat_action(reply: str, user_msg: str) -> tuple[str, str | None]:
     clean_reply = reply
     llm_action = None
     if nav_match:
-        llm_action = nav_match.group(1).lower().strip()
+        candidate = nav_match.group(1).lower().strip()
+        if not candidate.startswith("form-"):
+            llm_action = candidate
         clean_reply = re.sub(nav_pattern, "", reply, flags=re.IGNORECASE).strip()
 
     # 3. ONLY allow navigation if the user explicitly intended to navigate (verb present or exact page name match)
@@ -470,11 +467,6 @@ def _extract_chat_action(reply: str, user_msg: str) -> tuple[str, str | None]:
                 "preference": "settings-preference", "model": "settings-preference",
                 "password": "settings-password", "security": "settings-password",
                 "documents": "my-documents", "history": "my-documents",
-                "fx ndf form": "form-fx_ndf", "irs form": "form-irs", "cds form": "form-cds",
-                "equity trs form": "form-equity_trs",
-                "fx ndf": "form-fx_ndf", "irs": "form-irs", "cds": "form-cds",
-                "equity trs": "form-equity_trs", "trs": "form-equity_trs",
-                "create fx": "form-fx_ndf", "create irs": "form-irs", "create cds": "form-cds", "create trs": "form-equity_trs",
             }
             for kw, target in keywords.items():
                 pattern = rf"\b{re.escape(kw)}\b"
@@ -524,11 +516,6 @@ def _detect_fast_navigation(user_msg: str) -> str | None:
         "ai": "ai", "extraction": "ai", "upload": "ai",
         "settings": "settings-profile", "profile": "settings-profile",
         "documents": "my-documents", "history": "my-documents",
-        "fx ndf form": "form-fx_ndf", "irs form": "form-irs", "cds form": "form-cds",
-        "equity trs form": "form-equity_trs",
-        "fx ndf": "form-fx_ndf", "irs": "form-irs", "cds": "form-cds",
-        "equity trs": "form-equity_trs", "trs": "form-equity_trs",
-        "create fx": "form-fx_ndf", "create irs": "form-irs", "create cds": "form-cds", "create trs": "form-equity_trs",
     }
     
     # Standard navigation patterns: "go to cds", "open analytics" etc.
