@@ -238,6 +238,8 @@ DEMO_PASSWORD = os.environ.get("DEMO_USER_PASSWORD", "demo123")
 DEMO_NAME = os.environ.get("DEMO_USER_NAME", "Demo User")
 ENABLE_DEMO_USER = os.environ.get("ENABLE_DEMO_USER", "true" if not IS_PRODUCTION else "false").lower() == "true"
 VALID_DOC_TYPES = {"fx_ndf", "irs", "cds", "equity_trs"}
+DOCUSEAL_API_KEY = os.environ.get("DOCUSEAL_API_KEY", "")
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 
 def _json_body(required: bool = True) -> dict:
     body = request.get_json(silent=True)
@@ -1189,6 +1191,7 @@ def api_save_document():
             "summary":    str(body.get("summary", ""))[:400],
             "ai_created": ai_created,
             "is_draft":   is_draft,
+            "status":     "draft" if is_draft else str(body.get("status", "compiled")),
             "data":       data,
             "created_at": now,
             "updated_at": now,
@@ -1202,6 +1205,12 @@ def api_save_document():
             doc["pdf_file_id"] = pdf_file_id
         if gcs_object_path:
             doc["gcs_object_path"] = gcs_object_path
+
+        # Add Dispatch and Signatory tracking fields
+        doc["unsigned_pdf_url"] = body.get("unsigned_pdf_url") or None
+        doc["signed_pdf_url"] = body.get("signed_pdf_url") or None
+        doc["docuseal_submission_id"] = body.get("docuseal_submission_id") or None
+        doc["signer_email"] = body.get("signer_email") or None
 
         db = get_db()
         collection = db.drafts if is_draft else db.documents
@@ -1278,6 +1287,19 @@ def api_update_document(doc_id):
             if val in ["pending", "verified", "completed"]:
                 update_fields["validation_status"] = val
         
+        if "status" in body:
+            val = str(body["status"]).strip()
+            if val in ["draft", "compiled", "dispatched", "signed", "closed", "declined"]:
+                update_fields["status"] = val
+        if "unsigned_pdf_url" in body:
+            update_fields["unsigned_pdf_url"] = body["unsigned_pdf_url"]
+        if "signed_pdf_url" in body:
+            update_fields["signed_pdf_url"] = body["signed_pdf_url"]
+        if "docuseal_submission_id" in body:
+            update_fields["docuseal_submission_id"] = body["docuseal_submission_id"]
+        if "signer_email" in body:
+            update_fields["signer_email"] = body["signer_email"]
+
         new_is_draft = body.get("is_draft")
         source_email = str(body.get("source_email", "")).strip()
         
@@ -1291,6 +1313,9 @@ def api_update_document(doc_id):
             # Merge updates
             draft_doc.update(update_fields)
             draft_doc["is_draft"] = False
+            draft_doc["status"] = draft_doc.get("status", "compiled")
+            if draft_doc["status"] == "draft":
+                draft_doc["status"] = "compiled"
             
             # Set validation_status when finalizing
             if "validation_status" in update_fields:
@@ -1330,6 +1355,7 @@ def api_update_document(doc_id):
             # Merge updates
             final_doc.update(update_fields)
             final_doc["is_draft"] = True
+            final_doc["status"] = "draft"
             
             # Clear stale PDF references — old PDF is now outdated since form data changed
             final_doc.pop("pdf_file_id", None)
@@ -1399,14 +1425,43 @@ def api_delete_document(doc_id):
 @app.route("/api/documents/<doc_id>/pdf", methods=["GET"])
 @require_auth
 def api_serve_document_pdf(doc_id):
-    """Serve the stored PDF for a finalized document. Tries temp disk first, then GCS."""
+    """Serve the stored PDF for a document. Tries temp disk first, then GCS. Handles signed/unsigned types."""
     try:
         db = get_db()
         oid = ObjectId(doc_id)
         doc = db.documents.find_one({"_id": oid, "user_id": g.current_user_id})
         if not doc:
-            return jsonify({"error": "Document not found or not finalized"}), 404
+            doc = db.drafts.find_one({"_id": oid, "user_id": g.current_user_id})
+        if not doc:
+            return jsonify({"error": "Document not found"}), 404
 
+        pdf_type = request.args.get("type", "unsigned")
+
+        # ── Serving Signed PDF ──
+        if pdf_type == "signed":
+            gcs_signed_path = doc.get("gcs_signed_path", "")
+            local_signed_path = os.path.join(TEMP_PDF_DIR, g.current_user_id, "signed", f"{doc_id}_signed.pdf")
+
+            # 1. Try local disk first
+            if os.path.exists(local_signed_path):
+                filename = f"{doc.get('name', 'document')}_signed.pdf"
+                return send_file(local_signed_path, mimetype="application/pdf", as_attachment=True, download_name=filename)
+
+            # 2. Try GCS
+            if gcs_signed_path:
+                pdf_bytes = _download_from_gcs(gcs_signed_path)
+                if pdf_bytes:
+                    filename = os.path.basename(gcs_signed_path)
+                    return Response(
+                        pdf_bytes,
+                        mimetype="application/pdf",
+                        headers={
+                            "Content-Disposition": f"inline; filename={filename}",
+                        },
+                    )
+            return jsonify({"error": "Signed PDF not found on disk or in cloud storage"}), 404
+
+        # ── Serving Unsigned PDF (Standard Flow) ──
         file_id = doc.get("pdf_file_id", "")
         if not file_id:
             return jsonify({"error": "No PDF stored for this document"}), 404
@@ -1421,7 +1476,6 @@ def api_serve_document_pdf(doc_id):
         # 2. Fallback: try GCS (archived PDFs)
         gcs_path = doc.get("gcs_object_path", "")
         if gcs_path:
-            # Derive filename from file_id (job_id:filename) or GCS path
             gcs_filename = pdf_filename
             if not gcs_filename and ":" in file_id:
                 gcs_filename = file_id.split(":", 1)[1]
@@ -1430,7 +1484,6 @@ def api_serve_document_pdf(doc_id):
             if not gcs_filename:
                 gcs_filename = "document.pdf"
 
-            # Serve directly from backend to avoid CORS issues with cross-origin signed URLs
             pdf_bytes = _download_from_gcs(gcs_path)
             if pdf_bytes:
                 return Response(
@@ -1442,7 +1495,6 @@ def api_serve_document_pdf(doc_id):
                     },
                 )
 
-            # Fallback: signed URL redirect (requires GCS CORS if consumed by browser)
             signed_url = _generate_gcs_signed_url(gcs_path)
             if signed_url:
                 return jsonify({"signed_url": signed_url, "filename": gcs_filename})
@@ -1801,6 +1853,427 @@ def api_get_validation_report(doc_id):
     except Exception as e:
         if isinstance(e, (ServerSelectionTimeoutError, PyMongoError)):
             return _database_error_response(e)
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+# ═══════════════════════════════════════════
+# EMAIL & SIGNATORY INTEGRATIONS (RESEND & DOCUSEAL)
+# ═══════════════════════════════════════════
+
+def send_email_via_resend(to_email, subject, html_content, attachment_bytes=None, attachment_name=None):
+    """
+    Sends an email using the Resend API.
+    Optionally attaches a PDF document.
+    """
+    import base64
+    import requests
+
+    if not RESEND_API_KEY:
+        print("  ⚠️  RESEND_API_KEY is not set. Skipping email.")
+        return False
+    
+    url = "https://api.resend.com/emails"
+    headers = {
+        "Authorization": f"Bearer {RESEND_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "from": "TradeDoc AI <onboarding@resend.dev>",  # Sandbox testing domain
+        "to": [to_email],
+        "subject": subject,
+        "html": html_content
+    }
+    
+    if attachment_bytes and attachment_name:
+        encoded_content = base64.b64encode(attachment_bytes).decode("utf-8")
+        payload["attachments"] = [
+            {
+                "content": encoded_content,
+                "filename": attachment_name
+            }
+        ]
+        
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=15)
+        if response.status_code in [200, 201]:
+            print(f"  ✉️  Email successfully sent via Resend to {to_email}")
+            return True
+        else:
+            print(f"  ⚠️  Resend Email failed: {response.status_code} - {response.text}")
+            return False
+    except Exception as e:
+        print(f"  ⚠️  Error in Resend Helper: {e}")
+        return False
+
+
+def create_docuseal_template(pdf_bytes, filename, trade_name):
+    """
+    Uploads a PDF to DocuSeal to create a new template.
+    Returns the template ID and editor/preview URL.
+    """
+    import base64
+    import requests
+
+    if not DOCUSEAL_API_KEY:
+        print("  ⚠️  DOCUSEAL_API_KEY is not set.")
+        return None
+        
+    url = "https://api.docuseal.co/templates"
+    headers = {
+        "X-Auth-Token": DOCUSEAL_API_KEY,
+        "Content-Type": "application/json"
+    }
+    
+    encoded_file = base64.b64encode(pdf_bytes).decode("utf-8")
+    payload = {
+        "name": trade_name or "Trade Confirmation",
+        "documents": [
+            {
+                "file": f"data:application/pdf;base64,{encoded_file}",
+                "name": filename
+            }
+        ]
+    }
+    
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=20)
+        if response.status_code in [200, 201]:
+            data = response.json()
+            print(f"  📝 DocuSeal Template created: {data.get('id')}")
+            return data
+        else:
+            print(f"  ⚠️  DocuSeal template creation failed: {response.status_code} - {response.text}")
+            return None
+    except Exception as e:
+        print(f"  ⚠️  Error in DocuSeal Template Helper: {e}")
+        return None
+
+
+def create_docuseal_submission(template_id, sender_email, signer_email):
+    """
+    Creates a submission for a template, assigning roles for signing.
+    """
+    import requests
+
+    if not DOCUSEAL_API_KEY:
+        return None
+        
+    url = "https://api.docuseal.co/submissions"
+    headers = {
+        "X-Auth-Token": DOCUSEAL_API_KEY,
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "template_id": template_id,
+        "send_email": True,
+        "submitters": [
+            {
+                "role": "Sender",
+                "email": sender_email
+            },
+            {
+                "role": "Counterparty",
+                "email": signer_email
+            }
+        ]
+    }
+    
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=20)
+        if response.status_code in [200, 201]:
+            data = response.json()
+            print(f"  ✍️  DocuSeal Submission created: {response.status_code}")
+            return data
+        else:
+            print(f"  ⚠️  DocuSeal submission failed: {response.status_code} - {response.text}")
+            return None
+    except Exception as e:
+        print(f"  ⚠️  Error in DocuSeal Submission Helper: {e}")
+        return None
+
+
+@app.route("/api/documents/<doc_id>/dispatch", methods=["POST"])
+@require_auth
+def api_dispatch_document(doc_id):
+    """
+    Dispatch a document.
+    For FX: Emails the PDF directly to counterparty.
+    For IRS/CDS/TRS: Uploads to DocuSeal, creates signature links, and emails them.
+    """
+    try:
+        body = _json_body()
+        signer_email = str(body.get("signer_email", "")).strip()
+        signer_name = str(body.get("signer_name", "")).strip()
+        custom_message = str(body.get("message", "")).strip()
+        
+        if not signer_email:
+            return jsonify({"error": "Signer email is required"}), 400
+            
+        db = get_db()
+        oid = ObjectId(doc_id)
+        
+        doc = db.documents.find_one({"_id": oid, "user_id": g.current_user_id})
+        if not doc:
+            doc = db.drafts.find_one({"_id": oid, "user_id": g.current_user_id})
+            
+        if not doc:
+            return jsonify({"error": "Document not found"}), 404
+            
+        doc_type = doc["doc_type"]
+        file_id = doc.get("pdf_file_id", "")
+        
+        pdf_path = None
+        pdf_filename = None
+        pdf_bytes = None
+        
+        if file_id:
+            pdf_path, pdf_filename = _resolve_generated_pdf({"pdf_file_id": file_id})
+            if pdf_path and os.path.exists(pdf_path):
+                with open(pdf_path, "rb") as f:
+                    pdf_bytes = f.read()
+                    
+        if not pdf_bytes:
+            gcs_path = doc.get("gcs_object_path", "")
+            if gcs_path:
+                pdf_bytes = _download_from_gcs(gcs_path)
+                pdf_filename = f"{doc_id}_unsigned.pdf"
+                
+        if not pdf_bytes:
+            return jsonify({"error": "Compiled PDF file could not be found. Please generate the PDF first."}), 404
+            
+        # ── FX NDF Flow (Direct Email, No Signatures) ──
+        if doc_type == "fx_ndf":
+            subject = f"Trade Confirmation: {doc.get('name', 'FX NDF Trade')}"
+            html_content = f"""
+            <h3>Trade Confirmation Details</h3>
+            <p>Hi {signer_name or 'there'},</p>
+            <p>Please find attached the compiled Trade Confirmation for <strong>{doc.get('name')}</strong>.</p>
+            {f'<p>Message from sender: "{custom_message}"</p>' if custom_message else ''}
+            <br/>
+            <p>Best regards,<br/>TradeDoc AI team</p>
+            """
+            
+            sent = send_email_via_resend(signer_email, subject, html_content, pdf_bytes, pdf_filename)
+            if not sent:
+                return jsonify({"error": "Failed to send email via Resend"}), 500
+                
+            now = datetime.now(timezone.utc).isoformat()
+            update_fields = {
+                "status": "dispatched",
+                "signer_email": signer_email,
+                "unsigned_pdf_url": f"/api/documents/{doc_id}/pdf",
+                "updated_at": now
+            }
+            collection = db.documents if db.documents.find_one({"_id": oid}) else db.drafts
+            collection.update_one({"_id": oid}, {"$set": update_fields})
+            
+            return jsonify({
+                "status": "success",
+                "message": "FX Trade Confirmation emailed successfully",
+                "doc_status": "dispatched"
+            })
+            
+        # ── IRS/CDS/TRS Flow (DocuSeal Signature Requests) ──
+        else:
+            template = create_docuseal_template(pdf_bytes, pdf_filename or "trade.pdf", doc.get("name"))
+            if not template:
+                return jsonify({"error": "Failed to upload document to DocuSeal"}), 500
+                
+            template_id = template.get("id")
+            
+            sender_email = g.current_user.get("email")
+            submission = create_docuseal_submission(template_id, sender_email, signer_email)
+            if not submission:
+                return jsonify({"error": "Failed to create DocuSeal signature request"}), 500
+                
+            submitters = submission if isinstance(submission, list) else submission.get("submitters", [])
+            sender_sign_url = None
+            counterparty_sign_url = None
+            submission_id = None
+            
+            for s in submitters:
+                submission_id = s.get("submission_id") or submission_id
+                role = s.get("role", "").lower()
+                if "sender" in role:
+                    sender_sign_url = s.get("url")
+                elif "counterparty" in role or "receiver" in role:
+                    counterparty_sign_url = s.get("url")
+                    
+            if submitters and not submission_id:
+                submission_id = submitters[0].get("submission_id")
+                
+            if not submission_id:
+                submission_id = submission.get("id") if isinstance(submission, dict) else None
+                
+            now = datetime.now(timezone.utc).isoformat()
+            update_fields = {
+                "status": "dispatched",
+                "signer_email": signer_email,
+                "docuseal_submission_id": str(submission_id) if submission_id else None,
+                "unsigned_pdf_url": f"/api/documents/{doc_id}/pdf",
+                "updated_at": now
+            }
+            collection = db.documents if db.documents.find_one({"_id": oid}) else db.drafts
+            collection.update_one({"_id": oid}, {"$set": update_fields})
+            
+            return jsonify({
+                "status": "success",
+                "message": "Signature request dispatched successfully",
+                "doc_status": "dispatched",
+                "docuseal_submission_id": submission_id,
+                "sender_sign_url": sender_sign_url,
+                "counterparty_sign_url": counterparty_sign_url
+            })
+            
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/webhooks/docuseal", methods=["POST"])
+def api_docuseal_webhook():
+    """
+    Webhook endpoint for DocuSeal callbacks.
+    Updates document status to 'signed' and archives the completed PDF in GCS.
+    """
+    import requests
+    try:
+        payload = request.get_json(silent=True) or {}
+        event = payload.get("event")
+        print(f"  🔔 DocuSeal Webhook received: {event}")
+        
+        if event == "submission.completed":
+            data = payload.get("data", {})
+            submission_id = data.get("id")
+            
+            db = get_db()
+            doc = db.documents.find_one({"docuseal_submission_id": str(submission_id)})
+            if not doc:
+                doc = db.drafts.find_one({"docuseal_submission_id": str(submission_id)})
+                
+            if not doc:
+                print(f"  ⚠️  No document found for DocuSeal submission ID: {submission_id}")
+                return jsonify({"status": "ignored", "message": "Submission not tracked"}), 200
+                
+            documents = data.get("documents", [])
+            if not documents:
+                print("  ⚠️  No documents in submission completion payload")
+                return jsonify({"error": "No documents found"}), 400
+                
+            completed_pdf_url = documents[0].get("url")
+            if not completed_pdf_url:
+                print("  ⚠️  No completed PDF URL in payload")
+                return jsonify({"error": "No URL found"}), 400
+                
+            headers = {"X-Auth-Token": DOCUSEAL_API_KEY}
+            pdf_res = requests.get(completed_pdf_url, headers=headers, timeout=30)
+            if pdf_res.status_code != 200:
+                print(f"  ⚠️  Failed to download signed PDF: {pdf_res.status_code}")
+                return jsonify({"error": "Failed to download signed PDF"}), 500
+                
+            signed_pdf_bytes = pdf_res.content
+            doc_id = str(doc["_id"])
+            user_id = str(doc["user_id"])
+            doc_type = doc["doc_type"]
+            
+            gcs_signed_path = None
+            if GCS_AVAILABLE and GCS_BUCKET_NAME:
+                try:
+                    client = _storage_client()
+                    if client:
+                        bucket = client.bucket(GCS_BUCKET_NAME)
+                        object_path = f"{user_id}/{doc_type}/{doc_id}_signed.pdf"
+                        blob = bucket.blob(object_path)
+                        blob.upload_from_string(signed_pdf_bytes, content_type="application/pdf")
+                        gcs_signed_path = object_path
+                        print(f"  ☁️  Signed PDF saved to GCS: gs://{GCS_BUCKET_NAME}/{object_path}")
+                except Exception as e:
+                    print(f"  ⚠️  Error saving signed PDF to GCS: {e}")
+                    
+            local_signed_dir = os.path.join(TEMP_PDF_DIR, user_id, "signed")
+            os.makedirs(local_signed_dir, exist_ok=True)
+            local_signed_path = os.path.join(local_signed_dir, f"{doc_id}_signed.pdf")
+            with open(local_signed_path, "wb") as f:
+                f.write(signed_pdf_bytes)
+                
+            now = datetime.now(timezone.utc).isoformat()
+            update_fields = {
+                "status": "signed",
+                "signed_pdf_url": f"/api/documents/{doc_id}/pdf?type=signed",
+                "updated_at": now
+            }
+            if gcs_signed_path:
+                update_fields["gcs_signed_path"] = gcs_signed_path
+                
+            collection = db.documents if db.documents.find_one({"_id": ObjectId(doc_id)}) else db.drafts
+            collection.update_one({"_id": ObjectId(doc_id)}, {"$set": update_fields})
+            
+            print(f"  ✅ Document {doc_id} successfully transitioned to 'signed' status!")
+            
+            signer_email = doc.get("signer_email")
+            if signer_email:
+                sender = db.users.find_one({"_id": ObjectId(user_id)})
+                sender_email = sender.get("email") if sender else None
+                
+                subject = f"Executed Trade Confirmation: {doc.get('name', 'Trade')}"
+                html_content = f"""
+                <h3>Your Trade document is fully executed!</h3>
+                <p>Hi,</p>
+                <p>The trade document <strong>{doc.get('name')}</strong> has been successfully signed by both parties.</p>
+                <p>We have attached the final executed PDF containing the electronic signatures and date/time stamps for your records.</p>
+                <br/>
+                <p>Best regards,<br/>TradeDoc AI team</p>
+                """
+                if sender_email:
+                    send_email_via_resend(sender_email, subject, html_content, signed_pdf_bytes, f"{doc.get('name', 'trade')}_signed.pdf")
+                send_email_via_resend(signer_email, subject, html_content, signed_pdf_bytes, f"{doc.get('name', 'trade')}_signed.pdf")
+            
+        return jsonify({"status": "received"}), 200
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/documents/<doc_id>/close", methods=["POST"])
+@require_auth
+def api_close_document(doc_id):
+    """
+    Close a document. Promotes status to 'closed'.
+    """
+    try:
+        db = get_db()
+        oid = ObjectId(doc_id)
+        
+        doc = db.documents.find_one({"_id": oid, "user_id": g.current_user_id})
+        collection = db.documents
+        if not doc:
+            doc = db.drafts.find_one({"_id": oid, "user_id": g.current_user_id})
+            collection = db.drafts
+            
+        if not doc:
+            return jsonify({"error": "Document not found"}), 404
+            
+        current_status = doc.get("status")
+        if current_status not in ["signed", "dispatched", "compiled"]:
+            return jsonify({"error": f"Cannot close document in '{current_status}' status"}), 400
+            
+        now = datetime.now(timezone.utc).isoformat()
+        collection.update_one(
+            {"_id": oid},
+            {"$set": {
+                "status": "closed",
+                "updated_at": now
+            }}
+        )
+        
+        print(f"  🔒 Document {doc_id} successfully closed/archived.")
+        return jsonify({
+            "status": "success",
+            "message": "Document successfully closed and archived",
+            "doc_status": "closed"
+        })
+    except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 

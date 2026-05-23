@@ -26,6 +26,7 @@ import DocumentTypeBreakdown from './components/DocumentTypeBreakdown';
 import ExtractionEfficiencyChart from './components/ExtractionEfficiencyChart';
 import SettingsUI from './components/SettingsUI';
 import MyDocumentsUI from './components/MyDocumentsUI';
+import DispatchCenterUI from './components/DispatchCenterUI';
 import dynamic from 'next/dynamic';
 
 const CustomPDFViewer = dynamic(() => import('./components/CustomPDFViewer'), { 
@@ -43,7 +44,7 @@ const CustomPDFViewer = dynamic(() => import('./components/CustomPDFViewer'), {
 // ── API Base ──────────────────────────────────
 const API = API_BASE;
 
-const validPages: AppPage[] = ['landing', 'analytics', 'ai', 'form', 'pdf', 'settings', 'my-documents'];
+const validPages: AppPage[] = ['landing', 'analytics', 'ai', 'form', 'pdf', 'settings', 'my-documents', 'dispatch'];
 
 function getInitialPage(): AppPage {
   return 'landing';
@@ -1138,6 +1139,7 @@ export default function DashboardPage() {
              page === 'ai' ? 'AI Extract' :
              page === 'analytics' ? 'Analytics' :
              page === 'settings' ? 'Settings' :
+             page === 'dispatch' ? 'Dispatch Center' :
              activeSchema?.name || 'Document Editor'}
           </h1>
         </div>
@@ -1320,9 +1322,60 @@ export default function DashboardPage() {
                 openDocInForm(doc);
               }}
               onViewPdfPage={(doc) => viewPdfFromDoc(doc)}
+              onDispatchView={async (doc) => {
+                setEditingDocId(doc._id);
+                const schema = schemas[doc.doc_type];
+                if (schema) setActiveSchema(schema);
+                
+                // Prefetch the PDF blob URL if not already done so the preview is fast
+                showLoading('Preparing Dispatch Center...', 'Fetching document details');
+                try {
+                  const r = await fetch(`${API}/api/documents/${doc._id}/pdf`, { headers: authHeaders() });
+                  if (r.ok) {
+                    const contentType = r.headers.get('Content-Type') || '';
+                    if (contentType.includes('application/json')) {
+                      const urlData = await r.json();
+                      const signedUrl = urlData.signed_url;
+                      if (signedUrl) {
+                        const pdfResp = await fetch(signedUrl);
+                        if (pdfResp.ok) {
+                          const pdfBlob = await pdfResp.blob();
+                          if (currentPdfBlobUrl) URL.revokeObjectURL(currentPdfBlobUrl);
+                          setCurrentPdfBlobUrl(URL.createObjectURL(pdfBlob));
+                          setCurrentPdfFilename(urlData.filename || 'confirmation.pdf');
+                        }
+                      }
+                    } else {
+                      const blob = await r.blob();
+                      const contentDisp = r.headers.get('Content-Disposition') || '';
+                      let fname = 'confirmation.pdf';
+                      const match = contentDisp.match(/filename=([^;]+)/);
+                      if (match) fname = match[1].replace(/"/g, '').trim();
+                      if (currentPdfBlobUrl) URL.revokeObjectURL(currentPdfBlobUrl);
+                      setCurrentPdfBlobUrl(URL.createObjectURL(blob));
+                      setCurrentPdfFilename(fname);
+                    }
+                  }
+                } catch (e) {
+                  console.error('Failed to prefetch PDF:', e);
+                }
+                hideLoading();
+                setPage('dispatch');
+              }}
             />
           )}
 
+          {page === 'dispatch' && editingDocId && activeSchema && (
+            <DispatchCenterUI
+              docId={editingDocId}
+              activeSchema={activeSchema}
+              pdfUrl={currentPdfBlobUrl || ''}
+              pdfFilename={currentPdfFilename}
+              onClose={goHome}
+              onShowToast={showToast}
+              onFetchRecentDocs={fetchRecentDocs}
+            />
+          )}
 
           {page === 'ai' && <AIExtractPanel text={aiEmailText} onChange={setAiEmailText} onExtract={submitAIExtract} onCancel={goHome} />}
 

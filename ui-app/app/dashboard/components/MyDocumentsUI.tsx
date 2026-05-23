@@ -24,10 +24,12 @@ interface MyDocumentsUIProps {
   onFetchPdfBlob: (docId: string) => Promise<{ url: string; filename: string } | null>;
   onFormView?: (doc: RecentDoc) => void;
   onViewPdfPage?: (doc: RecentDoc) => void; // mobile: navigate to PDF page
+  onDispatchView?: (doc: RecentDoc) => void; // navigate to Dispatch Center
 }
 
 const DOC_TYPES = [
   { id: 'drafts', label: 'Drafts' },
+  { id: 'action_required', label: 'Action Required' },
   { id: 'fx_ndf', label: 'FX NDF' },
   { id: 'irs', label: 'Interest Rate Swap' },
   { id: 'cds', label: 'Credit Default Swap' },
@@ -41,6 +43,7 @@ export default function MyDocumentsUI({
   onFetchPdfBlob,
   onFormView,
   onViewPdfPage,
+  onDispatchView,
 }: MyDocumentsUIProps) {
   const [activeTab, setActiveTab] = useState('drafts');
   const [deleteModal, setDeleteModal] = useState<{ isOpen: boolean; docId: string | null }>({
@@ -74,12 +77,22 @@ export default function MyDocumentsUI({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
 
-  // Filter documents by type and draft status
+  // Filter documents by type, draft status, and dispatch/signed statuses
   const filteredDocs = documents.filter((doc) => {
     if (activeTab === 'drafts') {
-      return doc.is_draft || doc.validation_status === 'pending' || doc.validation_status === 'verified';
+      return doc.is_draft || doc.status === 'draft';
     }
-    return !doc.is_draft && doc.validation_status === 'completed' && doc.doc_type === activeTab;
+    if (activeTab === 'action_required') {
+      return doc.status === 'dispatched' || doc.status === 'signed';
+    }
+    // Finalized asset class tab: show documents that are not in drafts, not out for signatures, and match type
+    return (
+      !doc.is_draft &&
+      doc.status !== 'draft' &&
+      doc.status !== 'dispatched' &&
+      doc.status !== 'signed' &&
+      doc.doc_type === activeTab
+    );
   });
 
   // Helper to get a descriptive title from doc data
@@ -181,9 +194,18 @@ export default function MyDocumentsUI({
         {DOC_TYPES.map((type) => {
           const count = documents.filter((doc) => {
             if (type.id === 'drafts') {
-              return doc.is_draft || doc.validation_status === 'pending' || doc.validation_status === 'verified';
+              return doc.is_draft || doc.status === 'draft';
             }
-            return !doc.is_draft && doc.validation_status === 'completed' && doc.doc_type === type.id;
+            if (type.id === 'action_required') {
+              return doc.status === 'dispatched' || doc.status === 'signed';
+            }
+            return (
+              !doc.is_draft &&
+              doc.status !== 'draft' &&
+              doc.status !== 'dispatched' &&
+              doc.status !== 'signed' &&
+              doc.doc_type === type.id
+            );
           }).length;
 
           return (
@@ -252,7 +274,7 @@ export default function MyDocumentsUI({
                 <div className="flex items-center gap-4 mb-3">
                   <div
                     className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all duration-300 shadow-sm ${
-                      doc.is_draft
+                      doc.is_draft || doc.status === 'draft'
                         ? 'bg-amber-50 text-amber-600 group-hover:bg-amber-600 group-hover:text-white'
                         : 'bg-indigo-50 text-indigo-600 group-hover:bg-indigo-600 group-hover:text-white'
                     }`}
@@ -264,7 +286,7 @@ export default function MyDocumentsUI({
                       stroke="currentColor"
                       viewBox="0 0 24 24"
                     >
-                      {doc.is_draft ? (
+                      {doc.is_draft || doc.status === 'draft' ? (
                         <path
                           strokeLinecap="round"
                           strokeLinejoin="round"
@@ -284,7 +306,7 @@ export default function MyDocumentsUI({
                   <div className="flex-1 min-w-0">
                     <p
                       className={`text-sm font-bold truncate transition-colors ${
-                        doc.is_draft
+                        doc.is_draft || doc.status === 'draft'
                           ? 'text-slate-800 group-hover:text-amber-600'
                           : 'text-slate-800 group-hover:text-indigo-600'
                       }`}
@@ -311,22 +333,30 @@ export default function MyDocumentsUI({
                     )}
                     <div
                       className={`w-1.5 h-1.5 rounded-full ${
-                        doc.is_draft
+                        doc.is_draft || doc.status === 'draft'
                           ? 'bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.5)]'
+                          : doc.status === 'dispatched'
+                          ? 'bg-purple-500 shadow-[0_0_8px_rgba(168,85,247,0.5)] animate-pulse'
+                          : doc.status === 'signed'
+                          ? 'bg-teal-500 shadow-[0_0_8px_rgba(20,184,166,0.5)] animate-pulse'
+                          : doc.status === 'closed'
+                          ? 'bg-slate-400 shadow-[0_0_8px_rgba(148,163,184,0.5)]'
                           : doc.validation_status === 'pending'
                           ? 'bg-violet-400 shadow-[0_0_8px_rgba(139,92,246,0.5)]'
-                          : doc.validation_status === 'completed'
-                          ? 'bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)]'
                           : 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]'
                       }`}
                     />
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                      {doc.is_draft
-                        ? 'In Progress'
+                      {doc.is_draft || doc.status === 'draft'
+                        ? 'Draft'
+                        : doc.status === 'dispatched'
+                        ? 'Out for Signature'
+                        : doc.status === 'signed'
+                        ? 'Ready to Close'
+                        : doc.status === 'closed'
+                        ? 'Closed / Archived'
                         : doc.validation_status === 'pending'
                         ? 'Pending Validation'
-                        : doc.validation_status === 'completed'
-                        ? 'Completed'
                         : 'Verified Trade'}
                     </span>
                   </div>
@@ -373,6 +403,34 @@ export default function MyDocumentsUI({
             {/* Header action buttons */}
             {selectedDoc && !pdfLoading && !pdfError && (
               <div className="flex items-center gap-1">
+                {/* Dispatch Trade */}
+                {(selectedDoc.status === 'compiled' || (!selectedDoc.status && !selectedDoc.is_draft)) && (
+                  <button
+                    onClick={() => onDispatchView?.(selectedDoc)}
+                    title="Dispatch Trade (Email/Sign)"
+                    className="mr-1 px-3 py-1.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-600 text-xs font-bold transition-all flex items-center gap-1.5 shrink-0"
+                  >
+                    <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                    </svg>
+                    Dispatch
+                  </button>
+                )}
+
+                {/* View Dispatch */}
+                {(selectedDoc.status === 'dispatched' || selectedDoc.status === 'signed') && (
+                  <button
+                    onClick={() => onDispatchView?.(selectedDoc)}
+                    title="Open in Dispatch Center"
+                    className="mr-1 px-3 py-1.5 rounded-xl bg-teal-50 hover:bg-teal-100 text-teal-600 text-xs font-bold transition-all flex items-center gap-1.5 shrink-0"
+                  >
+                    <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                    </svg>
+                    View Dispatch
+                  </button>
+                )}
+
                 {/* Download */}
                 <button
                   onClick={handleDownload}

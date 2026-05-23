@@ -59,8 +59,13 @@ export interface RecentDoc {
   validation_status?: 'pending' | 'verified' | 'completed';
   source_email?: string;
   gcs_object_path?: string;
+  status?: 'draft' | 'compiled' | 'dispatched' | 'signed' | 'closed' | 'declined';
+  unsigned_pdf_url?: string;
+  signed_pdf_url?: string;
+  docuseal_submission_id?: string;
+  signer_email?: string;
 }
 
-export type AppPage = 'landing' | 'analytics' | 'ai' | 'form' | 'pdf' | 'settings' | 'my-documents';
+export type AppPage = 'landing' | 'analytics' | 'ai' | 'form' | 'pdf' | 'settings' | 'my-documents' | 'dispatch';
 export type ModalType = 'none' | 'mode' | 'type' | 'preview' | 'new-doc';
 export type SettingsTab = 'edit-profile' | 'security';
