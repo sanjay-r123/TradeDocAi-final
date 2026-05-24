@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import { Schema, RecentDoc } from '../types';
 import { authHeaders, API_BASE } from '../../../lib/api';
@@ -37,6 +37,45 @@ export default function DispatchCenterUI({
   onFetchRecentDocs,
 }: DispatchCenterUIProps) {
   const [signerEmail, setSignerEmail] = useState('');
+  const [builderToken, setBuilderToken] = useState<string | null>(null);
+  const [scriptLoaded, setScriptLoaded] = useState(false);
+
+  // Load DocuSeal builder script and fetch JWT token
+  useEffect(() => {
+    if (activeSchema.id === 'fx_ndf') return; // FX doesn't use DocuSeal
+    
+    // Load script dynamically
+    const scriptId = 'docuseal-builder-script';
+    let script = document.getElementById(scriptId) as HTMLScriptElement;
+    if (!script) {
+      script = document.createElement('script');
+      script.id = scriptId;
+      script.src = 'https://cdn.docuseal.com/js/builder.js';
+      script.async = true;
+      script.onload = () => setScriptLoaded(true);
+      document.body.appendChild(script);
+    } else {
+      setScriptLoaded(true);
+    }
+
+    // Fetch token from backend
+    const fetchToken = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/api/documents/${docId}/builder-token`, {
+          headers: authHeaders(),
+        });
+        if (response.ok) {
+          const data = await response.json();
+          setBuilderToken(data.token);
+        } else {
+          onShowToast('⚠️ Failed to load template workspace');
+        }
+      } catch (e) {
+        onShowToast('❌ Network error loading template workspace');
+      }
+    };
+    fetchToken();
+  }, [docId, activeSchema, onShowToast]);
   const [signerName, setSignerName] = useState('');
   const [customMessage, setCustomMessage] = useState('');
   const [loading, setLoading] = useState(false);
@@ -156,20 +195,34 @@ export default function DispatchCenterUI({
       {/* Grid Layout: Split Screen */}
       <div className="flex-1 flex flex-col xl:flex-row gap-6 min-h-0 items-stretch">
         
-        {/* Left Panel: Document PDF Preview */}
+        {/* Left Panel: Document PDF Preview or secure Template Builder */}
         <div className="flex-1 min-h-[450px] sm:min-h-[500px] xl:max-h-[calc(100vh-220px)] bg-slate-50 border border-slate-100 rounded-3xl overflow-hidden relative shadow-inner">
           <div className="w-full h-full">
-            <CustomPDFViewer
-              pdfUrl={pdfUrl}
-              filename={pdfFilename || 'Confirmation'}
-              onClose={onClose}
-              onDownload={() => {}}
-              onPrint={() => {}}
-              isAiCreated={false}
-              hasExistingReport={false}
-              hideSidebar={true}
-              hideToolbar={true}
-            />
+            {isFx ? (
+              <CustomPDFViewer
+                pdfUrl={pdfUrl}
+                filename={pdfFilename || 'Confirmation'}
+                onClose={onClose}
+                onDownload={() => {}}
+                onPrint={() => {}}
+                isAiCreated={false}
+                hasExistingReport={false}
+                hideSidebar={true}
+                hideToolbar={true}
+              />
+            ) : builderToken && scriptLoaded ? (
+              React.createElement('docuseal-builder', {
+                'data-token': builderToken,
+                'class': 'w-full h-full border-none'
+              })
+            ) : (
+              <div className="flex flex-col items-center justify-center h-full gap-4 bg-slate-50">
+                <div className="w-10 h-10 border-4 border-slate-200 border-t-indigo-500 rounded-full animate-spin" />
+                <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">
+                  Loading Template Builder...
+                </p>
+              </div>
+            )}
           </div>
         </div>
 

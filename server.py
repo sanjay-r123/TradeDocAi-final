@@ -1932,6 +1932,14 @@ def create_docuseal_template(pdf_bytes, filename, trade_name):
                 "file": encoded_file,
                 "name": filename
             }
+        ],
+        "submitters": [
+            {
+                "role": "Sender"
+            },
+            {
+                "role": "Counterparty"
+            }
         ]
     }
     
@@ -1991,6 +1999,102 @@ def create_docuseal_submission(template_id, sender_email, signer_email):
     except Exception as e:
         print(f"  ⚠️  Error in DocuSeal Submission Helper: {e}")
         return None
+
+
+def sign_jwt_hs256(payload: dict, key: str) -> str:
+    import json
+    import base64
+    import hmac
+    import hashlib
+
+    def base64url_encode(b: bytes) -> str:
+        return base64.urlsafe_b64encode(b).decode('utf-8').replace('=', '')
+
+    header = {"alg": "HS256", "typ": "JWT"}
+    
+    header_part = base64url_encode(json.dumps(header, separators=(',', ':')).encode('utf-8'))
+    payload_part = base64url_encode(json.dumps(payload, separators=(',', ':')).encode('utf-8'))
+    
+    message = f"{header_part}.{payload_part}"
+    
+    signature = hmac.new(key.encode('utf-8'), message.encode('utf-8'), digestmod=hashlib.sha256).digest()
+    signature_part = base64url_encode(signature)
+    
+    return f"{message}.{signature_part}"
+
+
+@app.route("/api/documents/<doc_id>/builder-token", methods=["GET"])
+@require_auth
+def api_get_builder_token(doc_id):
+    """
+    Get a secure JWT token for the DocuSeal Template Builder.
+    If the template is not already created on DocuSeal, it compiles and uploads it first.
+    """
+    try:
+        db = get_db()
+        oid = ObjectId(doc_id)
+        
+        doc = db.documents.find_one({"_id": oid, "user_id": g.current_user_id})
+        if not doc:
+            doc = db.drafts.find_one({"_id": oid, "user_id": g.current_user_id})
+            
+        if not doc:
+            return jsonify({"error": "Document not found"}), 404
+            
+        template_id = doc.get("docuseal_template_id")
+        
+        # If template is not created yet, upload the compiled PDF to DocuSeal first
+        if not template_id:
+            file_id = doc.get("pdf_file_id", "")
+            pdf_bytes = None
+            pdf_filename = None
+            
+            if file_id:
+                pdf_path, pdf_filename = _resolve_generated_pdf({"pdf_file_id": file_id})
+                if pdf_path and os.path.exists(pdf_path):
+                    with open(pdf_path, "rb") as f:
+                        pdf_bytes = f.read()
+                        
+            if not pdf_bytes:
+                gcs_path = doc.get("gcs_object_path", "")
+                if gcs_path:
+                    pdf_bytes = _download_from_gcs(gcs_path)
+                    pdf_filename = f"{doc_id}_unsigned.pdf"
+                    
+            if not pdf_bytes:
+                return jsonify({"error": "Compiled PDF file could not be found. Please generate the PDF first."}), 404
+                
+            template = create_docuseal_template(pdf_bytes, pdf_filename or "trade.pdf", doc.get("name"))
+            if not template:
+                return jsonify({"error": "Failed to upload document to DocuSeal"}), 500
+                
+            template_id = template.get("id")
+            
+            # Save the template ID in MongoDB
+            collection = db.documents if db.documents.find_one({"_id": oid}) else db.drafts
+            collection.update_one({"_id": oid}, {"$set": {"docuseal_template_id": template_id}})
+            
+        # Generate the secure JWT token signed with DOCUSEAL_API_KEY
+        sender_email = g.current_user.get("email") or "admin@company.com"
+        payload = {
+            "user_email": sender_email,
+            "integration_email": sender_email,
+            "external_id": str(doc_id),
+            "name": doc.get("name", "Trade Confirmation"),
+            "template_id": int(template_id)
+        }
+        
+        token = sign_jwt_hs256(payload, DOCUSEAL_API_KEY)
+        
+        return jsonify({
+            "status": "success",
+            "token": token,
+            "template_id": template_id
+        })
+        
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/documents/<doc_id>/dispatch", methods=["POST"])
@@ -2076,11 +2180,14 @@ def api_dispatch_document(doc_id):
             
         # ── IRS/CDS/TRS Flow (DocuSeal Signature Requests) ──
         else:
-            template = create_docuseal_template(pdf_bytes, pdf_filename or "trade.pdf", doc.get("name"))
-            if not template:
-                return jsonify({"error": "Failed to upload document to DocuSeal"}), 500
-                
-            template_id = template.get("id")
+            template_id = doc.get("docuseal_template_id")
+            if not template_id:
+                template = create_docuseal_template(pdf_bytes, pdf_filename or "trade.pdf", doc.get("name"))
+                if not template:
+                    return jsonify({"error": "Failed to upload document to DocuSeal"}), 500
+                template_id = template.get("id")
+                collection = db.documents if db.documents.find_one({"_id": oid}) else db.drafts
+                collection.update_one({"_id": oid}, {"$set": {"docuseal_template_id": template_id}})
             
             sender_email = g.current_user.get("email")
             submission = create_docuseal_submission(template_id, sender_email, signer_email)
