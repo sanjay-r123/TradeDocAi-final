@@ -17,6 +17,15 @@ const CustomPDFViewer = dynamic(() => import('./CustomPDFViewer'), {
   ),
 });
 
+interface PlacedField {
+  id: string;
+  type: 'signature' | 'name' | 'title' | 'date' | 'text';
+  label: string;
+  x: number;
+  y: number;
+  value: string;
+}
+
 interface DispatchCenterUIProps {
   docId: string;
   activeSchema: Schema;
@@ -48,11 +57,15 @@ export default function DispatchCenterUI({
   const [bankerTitle, setBankerTitle] = useState('Managing Director');
   const [stampedDate, setStampedDate] = useState(new Date().toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' }));
   
-  // Draggable states (coordinates are represented as percentages: 0 to 100)
-  const [sigPosition, setSigPosition] = useState({ x: 25, y: 78 });
-  const [textPosition, setTextPosition] = useState({ x: 50, y: 78 });
-  const [isDraggingSig, setIsDraggingSig] = useState(false);
-  const [isDraggingText, setIsDraggingText] = useState(false);
+  // Acrobat / DocuSeal Dynamic Fields State
+  const [placedFields, setPlacedFields] = useState<PlacedField[]>([
+    { id: 'sig', type: 'signature', label: 'Signature', x: 25, y: 78, value: '' },
+    { id: 'name', type: 'name', label: 'Signatory Name', x: 45, y: 76, value: 'Sanjay R' },
+    { id: 'title', type: 'title', label: 'Corporate Title', x: 45, y: 81, value: 'Managing Director' },
+    { id: 'date', type: 'date', label: 'Signing Date', x: 45, y: 86, value: new Date().toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' }) }
+  ]);
+  const [activeDragId, setActiveDragId] = useState<string | null>(null);
+  const [selectedFieldId, setSelectedFieldId] = useState<string | null>(null);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
 
   // DocuSeal states
@@ -181,6 +194,7 @@ export default function DispatchCenterUI({
     if (!ctx) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     setSignatureImage(null);
+    setPlacedFields(prev => prev.map(f => f.type === 'signature' ? { ...f, value: '' } : f));
   };
 
   const acceptSignature = () => {
@@ -188,71 +202,126 @@ export default function DispatchCenterUI({
     if (!canvas) return;
     const dataUrl = canvas.toDataURL('image/png');
     setSignatureImage(dataUrl);
-    onShowToast('📋 Signature captured! Position your stamp on the document.');
+    setPlacedFields(prev => prev.map(f => f.type === 'signature' ? { ...f, value: dataUrl } : f));
+    onShowToast('📋 Signature captured! Position your signature stamp on the document.');
+  };
+
+  // Dynamic Fields Helpers
+  const addField = (type: 'signature' | 'name' | 'title' | 'date' | 'text') => {
+    const id = `${type}_${Date.now()}`;
+    let label = '';
+    let defaultValue = '';
+    
+    switch (type) {
+      case 'signature':
+        label = 'Signature';
+        defaultValue = signatureImage || '';
+        break;
+      case 'name':
+        label = 'Signatory Name';
+        defaultValue = bankerName;
+        break;
+      case 'title':
+        label = 'Corporate Title';
+        defaultValue = bankerTitle;
+        break;
+      case 'date':
+        label = 'Signing Date';
+        defaultValue = stampedDate;
+        break;
+      case 'text':
+        label = 'Custom Text';
+        defaultValue = 'Enter text here';
+        break;
+    }
+    
+    // Spawn at a neat staggered coordinate
+    const newField: PlacedField = {
+      id,
+      type,
+      label,
+      x: 35 + (placedFields.length * 4) % 25,
+      y: 40 + (placedFields.length * 5) % 25,
+      value: defaultValue
+    };
+    
+    setPlacedFields(prev => [...prev, newField]);
+    setSelectedFieldId(id);
+    onShowToast(`➕ Added ${label} field. Drag to place!`);
+  };
+
+  const updateSelectedFieldValue = (val: string) => {
+    if (!selectedFieldId) return;
+    setPlacedFields(prev => prev.map(f => f.id === selectedFieldId ? { ...f, value: val } : f));
+    // Keep local states in sync if editing core banker fields
+    const field = placedFields.find(f => f.id === selectedFieldId);
+    if (field) {
+      if (field.type === 'name') setBankerName(val);
+      if (field.type === 'title') setBankerTitle(val);
+    }
   };
 
   // Draggable Event Handlers
   const onDragMove = (e: React.MouseEvent) => {
-    if (!isDraggingSig && !isDraggingText) return;
+    if (!activeDragId) return;
     const container = e.currentTarget.getBoundingClientRect();
     
     const deltaX = ((e.clientX - dragStart.x) / container.width) * 100;
     const deltaY = ((e.clientY - dragStart.y) / container.height) * 100;
     
-    if (isDraggingSig) {
-      setSigPosition(prev => ({
-        x: Math.max(0, Math.min(100 - 15, prev.x + deltaX)),
-        y: Math.max(0, Math.min(100 - 8, prev.y + deltaY))
-      }));
-    } else if (isDraggingText) {
-      setTextPosition(prev => ({
-        x: Math.max(0, Math.min(100 - 20, prev.x + deltaX)),
-        y: Math.max(0, Math.min(100 - 12, prev.y + deltaY))
-      }));
-    }
+    setPlacedFields(prev => prev.map(field => {
+      if (field.id === activeDragId) {
+        const widthOffset = field.type === 'signature' ? 16 : 22;
+        const heightOffset = field.type === 'signature' ? 8 : 6;
+        return {
+          ...field,
+          x: Math.max(0, Math.min(100 - widthOffset, field.x + deltaX)),
+          y: Math.max(0, Math.min(100 - heightOffset, field.y + deltaY))
+        };
+      }
+      return field;
+    }));
+    
     setDragStart({ x: e.clientX, y: e.clientY });
   };
 
-  const startDragSig = (e: React.MouseEvent) => {
+  const startDrag = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    setIsDraggingSig(true);
-    setDragStart({ x: e.clientX, y: e.clientY });
-  };
-
-  const startDragText = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setIsDraggingText(true);
+    setActiveDragId(id);
+    setSelectedFieldId(id);
     setDragStart({ x: e.clientX, y: e.clientY });
   };
 
   const endDrag = () => {
-    setIsDraggingSig(false);
-    setIsDraggingText(false);
+    setActiveDragId(null);
   };
 
   // Stamping and Saving locally using PyMuPDF
   const handleLocalStamping = async () => {
-    if (!signatureImage) {
+    const sigField = placedFields.find(f => f.type === 'signature');
+    if (!sigField || !sigField.value) {
       onShowToast('⚠️ Please draw and capture your signature first');
       return;
     }
 
     setLoading(true);
     try {
+      const textFieldsPayload = placedFields
+        .filter(f => f.type !== 'signature' && f.value.trim() !== '')
+        .map(f => ({
+          text: f.value,
+          x_pct: f.x / 100,
+          y_pct: f.y / 100
+        }));
+
       const payload = {
-        page_num: 0, // Stamps on the first page/last page based on server, lets default to 0
-        sig_x_pct: sigPosition.x / 100,
-        sig_y_pct: sigPosition.y / 100,
+        page_num: 0,
+        sig_x_pct: sigField.x / 100,
+        sig_y_pct: sigField.y / 100,
         sig_w_pct: 0.16, // Fixed relative stamp width
         sig_h_pct: 0.08, // Fixed relative stamp height
-        signature_base64: signatureImage,
-        text_fields: [
-          {
-            text: `By: ____________________\nName: ${bankerName}\nTitle: ${bankerTitle}\nDate: ${stampedDate}`,
-            x_pct: textPosition.x / 100,
-            y_pct: textPosition.y / 100
-          }
-        ]
+        signature_base64: sigField.value,
+        text_fields: textFieldsPayload
       };
 
       const response = await fetch(`${API_BASE}/api/documents/${docId}/sign-local`, {
@@ -330,6 +399,8 @@ export default function DispatchCenterUI({
       onShowToast('📋 Link copied to clipboard!');
     }
   };
+
+  const selectedField = placedFields.find(f => f.id === selectedFieldId);
 
   return (
     <div className="flex flex-col min-h-full animate-fade-in gap-6 pb-8">
@@ -586,7 +657,8 @@ export default function DispatchCenterUI({
               onMouseMove={onDragMove}
               onMouseUp={endDrag}
               onMouseLeave={endDrag}
-              className="flex-1 w-full h-[650px] sm:h-[750px] lg:h-[800px] bg-slate-50 border border-slate-100 rounded-3xl relative shadow-inner overflow-hidden select-none"
+              onClick={() => setSelectedFieldId(null)}
+              className="flex-1 w-full h-[650px] sm:h-[750px] lg:h-[800px] bg-slate-50 border border-slate-100 rounded-3xl relative shadow-inner overflow-hidden select-none animate-fade-in"
             >
               {/* PDF Previewer */}
               <div className="w-full h-full pointer-events-none">
@@ -608,177 +680,252 @@ export default function DispatchCenterUI({
                 <div className="flex items-center gap-2">
                   <span className="text-lg">🎯</span>
                   <span className="text-xs font-semibold leading-none">
-                    {signatureImage 
-                      ? "👉 Drag and position your Signature Stamp and Text Box exactly on the Party A lines below!" 
-                      : "👈 Draw your signature on the right-side pad, click capture, and drag your stamp!"}
+                    Drag and place e-sign boxes anywhere on the PDF! Click a box to edit its value on the right.
                   </span>
                 </div>
               </div>
 
-              {/* Draggable Signature Overlay */}
-              {signatureImage && (
-                <div
-                  onMouseDown={startDragSig}
-                  style={{
-                    position: 'absolute',
-                    left: `${sigPosition.x}%`,
-                    top: `${sigPosition.y}%`,
-                    cursor: isDraggingSig ? 'grabbing' : 'grab',
-                    border: '2px dashed #f59e0b',
-                    padding: '4px',
-                    borderRadius: '8px',
-                    backgroundColor: 'rgba(251, 191, 36, 0.15)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    width: '160px',
-                    height: '70px',
-                    zIndex: 30,
-                    transition: isDraggingSig ? 'none' : 'box-shadow 0.2s'
-                  }}
-                  className="shadow-md hover:shadow-lg"
-                >
-                  <img src={signatureImage} alt="Signature Stamp" className="max-w-full max-h-full object-contain pointer-events-none" />
-                  <span className="text-[8px] bg-amber-500 text-white font-extrabold px-1 py-0.5 rounded absolute -top-2.5 right-2 uppercase tracking-wider scale-90">
-                    Signature
-                  </span>
-                </div>
-              )}
-
-              {/* Draggable Text Overlay */}
-              {signatureImage && (
-                <div
-                  onMouseDown={startDragText}
-                  style={{
-                    position: 'absolute',
-                    left: `${textPosition.x}%`,
-                    top: `${textPosition.y}%`,
-                    cursor: isDraggingText ? 'grabbing' : 'grab',
-                    border: '2px dashed #6366f1',
-                    padding: '6px 10px',
-                    borderRadius: '8px',
-                    backgroundColor: 'rgba(99, 102, 241, 0.12)',
-                    zIndex: 30,
-                    width: '220px',
-                    fontSize: '9px',
-                    fontWeight: 700,
-                    fontFamily: 'monospace',
-                    lineHeight: '1.4',
-                    color: '#1e1b4b',
-                    transition: isDraggingText ? 'none' : 'box-shadow 0.2s'
-                  }}
-                  className="shadow-md hover:shadow-lg whitespace-pre-line"
-                >
-                  {`By: ____________________\nName: ${bankerName}\nTitle: ${bankerTitle}\nDate: ${stampedDate}`}
-                  <span className="text-[8px] bg-indigo-600 text-white font-extrabold px-1 py-0.5 rounded absolute -top-2.5 right-2 uppercase tracking-wider scale-90">
-                    Signing block
-                  </span>
-                </div>
-              )}
-            </div>
-
-            {/* Right Panel: Banker Drawing Pad & text details */}
-            <div className="w-full xl:w-[460px] bg-white border border-slate-100 rounded-3xl shadow-xl flex flex-col p-6 sm:p-8 min-w-0 shrink-0">
-              <div className="flex-1 flex flex-col gap-5">
-                <div className="flex flex-col gap-1">
-                  <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-full uppercase tracking-wider w-fit">
-                    Step 2 of 4
-                  </span>
-                  <h3 className="text-xl font-black text-slate-800 tracking-tight">Banker Signature Pad</h3>
-                  <p className="text-xs text-slate-400 font-semibold leading-relaxed">
-                    Draw your signature in the frame below, fill in your credentials, and stamp them onto the trade document.
-                  </p>
-                </div>
-
-                {/* Drawing pad Canvas */}
-                <div className="flex flex-col gap-2">
-                  <label className="text-xs font-black text-slate-500 uppercase tracking-widest">Draw Signature</label>
-                  <div className="w-full h-[180px] bg-slate-50 border-2 border-dashed border-slate-200 rounded-2xl overflow-hidden relative shadow-inner">
-                    <canvas
-                      ref={canvasRef}
-                      onMouseDown={startDrawing}
-                      onMouseMove={draw}
-                      onMouseUp={stopDrawing}
-                      onMouseLeave={stopDrawing}
-                      onTouchStart={startDrawingTouch}
-                      onTouchMove={drawTouch}
-                      onTouchEnd={stopDrawing}
-                      className="w-full h-full cursor-crosshair"
-                    />
+              {/* Dynamic Drag-and-Drop Fields */}
+              {placedFields.map((field) => {
+                const isSelected = selectedFieldId === field.id;
+                const isSig = field.type === 'signature';
+                
+                return (
+                  <div
+                    key={field.id}
+                    onMouseDown={(e) => startDrag(e, field.id)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedFieldId(field.id);
+                    }}
+                    style={{
+                      position: 'absolute',
+                      left: `${field.x}%`,
+                      top: `${field.y}%`,
+                      cursor: activeDragId === field.id ? 'grabbing' : 'grab',
+                      border: isSelected 
+                        ? `2px solid ${isSig ? '#f59e0b' : '#6366f1'}` 
+                        : `1.5px dashed ${isSig ? '#d97706' : '#818cf8'}`,
+                      padding: isSig ? '4px' : '6px 10px',
+                      borderRadius: '10px',
+                      backgroundColor: isSig 
+                        ? 'rgba(254, 243, 199, 0.88)' // warm transparent amber
+                        : 'rgba(238, 242, 255, 0.88)', // premium transparent indigo
+                      backdropFilter: 'blur(4px)',
+                      zIndex: isSelected ? 40 : 30,
+                      width: isSig ? '160px' : '200px',
+                      minHeight: isSig ? '70px' : 'auto',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      transition: activeDragId === field.id ? 'none' : 'box-shadow 0.2s, border-color 0.2s'
+                    }}
+                    className={`shadow-md hover:shadow-lg select-none group ${isSelected ? 'ring-2 ring-indigo-500/20' : ''}`}
+                  >
+                    {isSig ? (
+                      field.value ? (
+                        <img 
+                          src={field.value} 
+                          alt="Signature Stamp" 
+                          className="max-w-full max-h-[56px] object-contain pointer-events-none mx-auto" 
+                        />
+                      ) : (
+                        <div className="flex flex-col items-center justify-center py-2 text-slate-400 gap-1">
+                          <svg className="w-5 h-5 text-amber-500" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                          </svg>
+                          <span className="text-[9px] font-black text-amber-600/80 uppercase tracking-wide">Draw Signature</span>
+                        </div>
+                      )
+                    ) : (
+                      <div className="flex flex-col gap-0.5">
+                        <span className="text-[7.5px] font-black text-slate-400 uppercase tracking-widest leading-none">
+                          {field.label}
+                        </span>
+                        <span className="text-[11px] font-bold text-slate-900 font-mono break-words leading-tight mt-0.5">
+                          {field.value || <em className="text-slate-300 font-normal">No text configured</em>}
+                        </span>
+                      </div>
+                    )}
                     
-                    {/* Clear Button */}
+                    {/* Role / Pill Badge */}
+                    <span className={`text-[7px] text-white font-extrabold px-1.5 py-0.5 rounded absolute -top-2.5 right-2 uppercase tracking-wider scale-90 ${
+                      isSig ? 'bg-amber-500' : 'bg-indigo-600'
+                    }`}>
+                      {field.label}
+                    </span>
+
+                    {/* Delete button */}
                     <button
-                      onClick={clearCanvas}
-                      type="button"
-                      className="absolute bottom-3 right-3 px-3 py-1.5 bg-slate-900/80 hover:bg-slate-900 text-white text-[10px] font-bold rounded-lg transition-all"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setPlacedFields(prev => prev.filter(f => f.id !== field.id));
+                        if (selectedFieldId === field.id) setSelectedFieldId(null);
+                      }}
+                      className="absolute -top-2 -left-2 w-5 h-5 rounded-full bg-rose-500 text-white flex items-center justify-center text-[10px] font-black opacity-0 group-hover:opacity-100 transition-opacity shadow-md hover:bg-rose-600 cursor-pointer"
+                      title="Delete Field"
                     >
-                      Clear Pad
+                      ×
                     </button>
                   </div>
-                  
+                );
+              })}
+            </div>
+
+            {/* Right Panel: Banker Drawing Pad & Acrobat Style Toolbox */}
+            <div className="w-full xl:w-[460px] bg-white border border-slate-100 rounded-3xl shadow-xl flex flex-col p-6 sm:p-8 min-w-0 shrink-0 gap-5 overflow-y-auto">
+              <div className="flex flex-col gap-1">
+                <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-full uppercase tracking-wider w-fit">
+                  Step 2 of 4
+                </span>
+                <h3 className="text-xl font-black text-slate-800 tracking-tight">Banker Signature Editor</h3>
+                <p className="text-xs text-slate-400 font-semibold leading-relaxed">
+                  Design and position your individual signing elements exactly like an Acrobat editor.
+                </p>
+              </div>
+
+              {/* 1. Acrobat Toolbox */}
+              <div className="border border-slate-100 bg-slate-50/50 p-4.5 rounded-2xl flex flex-col gap-3">
+                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none">
+                  🛠️ Drag & Drop Fields Toolbox
+                </span>
+                <div className="grid grid-cols-2 gap-2 mt-1">
                   <button
-                    onClick={acceptSignature}
+                    onClick={() => addField('text')}
+                    className="py-2.5 px-3 bg-white hover:bg-indigo-50 text-indigo-600 border border-slate-200/80 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-sm hover:border-indigo-200"
+                  >
+                    📝 + Custom Text
+                  </button>
+                  <button
+                    onClick={() => addField('signature')}
+                    className="py-2.5 px-3 bg-white hover:bg-amber-50 text-amber-600 border border-slate-200/80 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-sm hover:border-amber-200"
+                  >
+                    ✍️ + Signature Pad
+                  </button>
+                  <button
+                    onClick={() => addField('name')}
+                    className="py-2.5 px-3 bg-white hover:bg-indigo-50 text-indigo-600 border border-slate-200/80 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-sm hover:border-indigo-200"
+                  >
+                    👤 + Banker Name
+                  </button>
+                  <button
+                    onClick={() => addField('title')}
+                    className="py-2.5 px-3 bg-white hover:bg-indigo-50 text-indigo-600 border border-slate-200/80 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-sm hover:border-indigo-200"
+                  >
+                    💼 + Corp Title
+                  </button>
+                  <button
+                    onClick={() => addField('date')}
+                    className="py-2.5 px-3 bg-white hover:bg-indigo-50 text-indigo-600 border border-slate-200/80 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer col-span-2 shadow-sm hover:border-indigo-200"
+                  >
+                    📅 + Todays Date stamp
+                  </button>
+                </div>
+              </div>
+
+              {/* 2. Signature Drawing Canvas Card */}
+              <div className="border border-slate-100 p-4.5 rounded-2xl flex flex-col gap-2">
+                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none">
+                  🖊️ Drawn Ink Signature
+                </span>
+                <div className="w-full h-[140px] bg-slate-50 border-2 border-dashed border-slate-200 rounded-xl overflow-hidden relative shadow-inner mt-1">
+                  <canvas
+                    ref={canvasRef}
+                    onMouseDown={startDrawing}
+                    onMouseMove={draw}
+                    onMouseUp={stopDrawing}
+                    onMouseLeave={stopDrawing}
+                    onTouchStart={startDrawingTouch}
+                    onTouchMove={drawTouch}
+                    onTouchEnd={stopDrawing}
+                    className="w-full h-full cursor-crosshair bg-white"
+                  />
+                  <button
+                    onClick={clearCanvas}
                     type="button"
-                    className="w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-all"
+                    className="absolute bottom-2.5 right-2.5 px-2.5 py-1.5 bg-slate-900/80 hover:bg-slate-900 text-white text-[9px] font-bold rounded-lg transition-all cursor-pointer"
                   >
-                    Capture Signature Stroke
+                    Clear Pad
                   </button>
                 </div>
+                <button
+                  onClick={acceptSignature}
+                  type="button"
+                  className="w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-all cursor-pointer mt-1"
+                >
+                  Capture & Update Signature Stamp
+                </button>
+              </div>
 
-                {/* Text fields */}
-                <div className="flex flex-col gap-3 mt-1">
-                  <div className="flex flex-col gap-1.5">
-                    <label htmlFor="b-name" className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Signatory Name</label>
-                    <input
-                      type="text"
-                      id="b-name"
-                      value={bankerName}
-                      onChange={(e) => setBankerName(e.target.value)}
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 text-xs font-bold text-slate-800"
-                    />
+              {/* 3. Selected Field Properties Editor */}
+              {selectedField ? (
+                <div className="border border-indigo-100 bg-indigo-50/20 p-4.5 rounded-2xl flex flex-col gap-3 animate-fade-in">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded uppercase tracking-wider scale-95 leading-none">
+                      Selected: {selectedField.label}
+                    </span>
+                    <button
+                      onClick={() => {
+                        setPlacedFields(prev => prev.filter(f => f.id !== selectedFieldId));
+                        setSelectedFieldId(null);
+                      }}
+                      className="text-[10px] font-bold text-rose-500 hover:text-rose-600 transition-colors cursor-pointer"
+                    >
+                      Delete Field
+                    </button>
                   </div>
-
-                  <div className="flex flex-col gap-1.5">
-                    <label htmlFor="b-title" className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Corporate Title</label>
-                    <input
-                      type="text"
-                      id="b-title"
-                      value={bankerTitle}
-                      onChange={(e) => setBankerTitle(e.target.value)}
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 text-xs font-bold text-slate-800"
-                    />
-                  </div>
+                  {selectedField.type !== 'signature' ? (
+                    <div className="flex flex-col gap-1.5 mt-1">
+                      <label htmlFor="prop-val" className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none">
+                        Field Stamped Value
+                      </label>
+                      <input
+                        type="text"
+                        id="prop-val"
+                        value={selectedField.value}
+                        onChange={(e) => updateSelectedFieldValue(e.target.value)}
+                        className="w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 text-xs font-bold text-slate-800 bg-white"
+                      />
+                    </div>
+                  ) : (
+                    <p className="text-[10px] text-slate-400 font-semibold leading-relaxed mt-1">
+                      Signature coordinates are dynamically controlled. Re-draw and capture on the pad above to update the digital stroke.
+                    </p>
+                  )}
                 </div>
-
-                <div className="mt-auto pt-4 flex flex-col gap-2">
-                  <button
-                    onClick={handleLocalStamping}
-                    disabled={loading || !signatureImage}
-                    className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl shadow-xl shadow-indigo-600/10 text-sm flex items-center justify-center gap-2 transition-all active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-                  >
-                    {loading ? (
-                      <>
-                        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                        Stitching Signature...
-                      </>
-                    ) : (
-                      <>
-                        <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                        </svg>
-                        Apply & Stitch Signature
-                      </>
-                    )}
-                  </button>
-                  
-                  <button
-                    onClick={() => setActiveStep('recipient')}
-                    className="w-full py-2.5 text-xs font-bold text-slate-400 hover:text-slate-600 transition-colors text-center"
-                  >
-                    Back to Recipient Setup
-                  </button>
+              ) : (
+                <div className="p-4 bg-slate-50 border border-slate-100 border-dashed rounded-2xl flex items-center justify-center text-center text-[10.5px] font-bold text-slate-400 py-6">
+                  💡 Select any field on the document to edit its contents in real time.
                 </div>
+              )}
+
+              {/* Execution Actions */}
+              <div className="mt-auto pt-4 flex flex-col gap-2 shrink-0">
+                <button
+                  onClick={handleLocalStamping}
+                  disabled={loading || !signatureImage}
+                  className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl shadow-xl shadow-indigo-600/10 text-sm flex items-center justify-center gap-2 transition-all active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer font-inter"
+                >
+                  {loading ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      Stitching Signature...
+                    </>
+                  ) : (
+                    <>
+                      <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                      </svg>
+                      Apply & Stitch Signature
+                    </>
+                  )}
+                </button>
+                
+                <button
+                  onClick={() => setActiveStep('recipient')}
+                  className="w-full py-2 text-xs font-bold text-slate-400 hover:text-slate-600 transition-colors text-center"
+                >
+                  Back to Recipient Setup
+                </button>
               </div>
             </div>
           </div>
