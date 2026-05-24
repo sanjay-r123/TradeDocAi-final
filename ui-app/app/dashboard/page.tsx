@@ -662,7 +662,11 @@ export default function DashboardPage() {
       const full = await docResp.json();
       const data: Record<string, unknown> = full.data || {};
 
-      const r = await fetch(`${API}/api/documents/${doc._id}/pdf`, { headers: authHeaders() });
+      const isSignedOrClosed = doc.status === 'signed' || doc.status === 'closed';
+      const pdfUrl = isSignedOrClosed 
+        ? `${API}/api/documents/${doc._id}/pdf?type=signed`
+        : `${API}/api/documents/${doc._id}/pdf`;
+      const r = await fetch(pdfUrl, { headers: authHeaders() });
       if (!r.ok) {
         let errMsg = 'PDF not found';
         try { const d = await r.json(); errMsg = d.error || errMsg; } catch {}
@@ -1293,7 +1297,12 @@ export default function DashboardPage() {
               onDelete={handleDeleteDocument}
               onFetchPdfBlob={async (docId: string) => {
                 try {
-                  const r = await fetch(`${API}/api/documents/${docId}/pdf`, { headers: authHeaders() });
+                  const doc = recentDocs.find(d => d._id === docId);
+                  const isSignedOrClosed = doc && (doc.status === 'signed' || doc.status === 'closed');
+                  const pdfUrl = isSignedOrClosed 
+                    ? `${API}/api/documents/${docId}/pdf?type=signed`
+                    : `${API}/api/documents/${docId}/pdf`;
+                  const r = await fetch(pdfUrl, { headers: authHeaders() });
                   if (!r.ok) return null;
                   const contentType = r.headers.get('Content-Type') || '';
                   // GCS signed URL response
@@ -1330,7 +1339,11 @@ export default function DashboardPage() {
                 // Prefetch the PDF blob URL if not already done so the preview is fast
                 showLoading('Preparing Dispatch Center...', 'Fetching document details');
                 try {
-                  const r = await fetch(`${API}/api/documents/${doc._id}/pdf`, { headers: authHeaders() });
+                  const isSignedOrClosed = doc.status === 'signed' || doc.status === 'closed';
+                  const pdfUrl = isSignedOrClosed 
+                    ? `${API}/api/documents/${doc._id}/pdf?type=signed`
+                    : `${API}/api/documents/${doc._id}/pdf`;
+                  const r = await fetch(pdfUrl, { headers: authHeaders() });
                   if (r.ok) {
                     const contentType = r.headers.get('Content-Type') || '';
                     if (contentType.includes('application/json')) {

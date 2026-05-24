@@ -247,34 +247,46 @@ export default function RecentDocuments({ documents, onLoad, onView, onCreateNew
                       <span
                         className="w-1.5 h-1.5 rounded-full"
                         style={{
-                          background: doc.is_draft
+                          background: doc.is_draft || doc.status === 'draft'
                             ? '#f59e0b'
+                            : doc.status === 'dispatched'
+                            ? '#a855f7'
+                            : doc.status === 'signed'
+                            ? '#14b8a6'
+                            : doc.status === 'closed'
+                            ? '#94a3b8'
                             : doc.validation_status === 'pending'
                             ? '#8b5cf6'
-                            : doc.validation_status === 'completed'
-                            ? '#3b82f6'
                             : '#10b981'
                         }}
                       />
                       <span
-                        className="text-[12px] font-bold"
+                        className="text-[11px] sm:text-[12px] font-bold uppercase tracking-wider"
                         style={{
-                          color: doc.is_draft
-                            ? '#f59e0b'
-                            : doc.validation_status === 'pending'
+                          color: doc.is_draft || doc.status === 'draft'
+                            ? '#d97706'
+                            : doc.status === 'dispatched'
                             ? '#8b5cf6'
-                            : doc.validation_status === 'completed'
-                            ? '#3b82f6'
-                            : '#10b981'
+                            : doc.status === 'signed'
+                            ? '#0d9488'
+                            : doc.status === 'closed'
+                            ? '#64748b'
+                            : doc.validation_status === 'pending'
+                            ? '#7c3aed'
+                            : '#059669'
                         }}
                       >
-                        {doc.is_draft
-                          ? 'In Progress'
+                        {doc.is_draft || doc.status === 'draft'
+                          ? 'Draft'
+                          : doc.status === 'dispatched'
+                          ? 'Out for Signature'
+                          : doc.status === 'signed'
+                          ? 'Ready to Close'
+                          : doc.status === 'closed'
+                          ? 'Closed / Archived'
                           : doc.validation_status === 'pending'
                           ? 'Pending Validation'
-                          : doc.validation_status === 'completed'
-                          ? 'Completed'
-                          : 'Verified'}
+                          : 'Verified Trade'}
                       </span>
                     </div>
                   </td>
