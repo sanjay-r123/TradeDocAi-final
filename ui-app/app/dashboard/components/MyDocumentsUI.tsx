@@ -83,14 +83,12 @@ export default function MyDocumentsUI({
       return doc.is_draft || doc.status === 'draft';
     }
     if (activeTab === 'action_required') {
-      return doc.status === 'dispatched' || doc.status === 'signed';
+      return doc.status === 'compiled' || doc.status === 'dispatched' || doc.status === 'signed' || (!doc.status && !doc.is_draft);
     }
-    // Finalized asset class tab: show documents that are not in drafts, not out for signatures, and match type
+    // Finalized asset class tab: show documents that are fully closed/archived and match type
     return (
       !doc.is_draft &&
-      doc.status !== 'draft' &&
-      doc.status !== 'dispatched' &&
-      doc.status !== 'signed' &&
+      doc.status === 'closed' &&
       doc.doc_type === activeTab
     );
   });
@@ -197,13 +195,11 @@ export default function MyDocumentsUI({
               return doc.is_draft || doc.status === 'draft';
             }
             if (type.id === 'action_required') {
-              return doc.status === 'dispatched' || doc.status === 'signed';
+              return doc.status === 'compiled' || doc.status === 'dispatched' || doc.status === 'signed' || (!doc.status && !doc.is_draft);
             }
             return (
               !doc.is_draft &&
-              doc.status !== 'draft' &&
-              doc.status !== 'dispatched' &&
-              doc.status !== 'signed' &&
+              doc.status === 'closed' &&
               doc.doc_type === type.id
             );
           }).length;

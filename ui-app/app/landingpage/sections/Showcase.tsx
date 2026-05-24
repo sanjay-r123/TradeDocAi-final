@@ -63,7 +63,7 @@ export default function Showcase() {
             {/* Placeholder YouTube iframe */}
             <iframe
               className="absolute inset-0 w-full h-full"
-              src="https://www.youtube.com/embed/dQw4w9WgXcQ"
+              src="https://www.youtube.com/embed/mfeKKmTYAqU"
               title="TradeDoc AI — Platform Walkthrough"
               allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
               allowFullScreen
@@ -101,7 +101,7 @@ export default function Showcase() {
 
             {/* Watch on YouTube subtle link */}
             <a
-              href="https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+              href="https://www.youtube.com/watch?v=mfeKKmTYAqU"
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-1.5 text-[11px] sm:text-xs font-medium text-indigo-500 hover:text-indigo-600 transition-colors duration-200"

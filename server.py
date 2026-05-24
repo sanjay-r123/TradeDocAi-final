@@ -1918,7 +1918,7 @@ def create_docuseal_template(pdf_bytes, filename, trade_name):
         print("  ⚠️  DOCUSEAL_API_KEY is not set.")
         return None
         
-    url = "https://api.docuseal.co/templates"
+    url = "https://api.docuseal.co/templates/pdf"
     headers = {
         "X-Auth-Token": DOCUSEAL_API_KEY,
         "Content-Type": "application/json"
@@ -1929,7 +1929,7 @@ def create_docuseal_template(pdf_bytes, filename, trade_name):
         "name": trade_name or "Trade Confirmation",
         "documents": [
             {
-                "file": f"data:application/pdf;base64,{encoded_file}",
+                "file": encoded_file,
                 "name": filename
             }
         ]
@@ -2060,7 +2060,7 @@ def api_dispatch_document(doc_id):
                 
             now = datetime.now(timezone.utc).isoformat()
             update_fields = {
-                "status": "dispatched",
+                "status": "closed",
                 "signer_email": signer_email,
                 "unsigned_pdf_url": f"/api/documents/{doc_id}/pdf",
                 "updated_at": now
@@ -2071,7 +2071,7 @@ def api_dispatch_document(doc_id):
             return jsonify({
                 "status": "success",
                 "message": "FX Trade Confirmation emailed successfully",
-                "doc_status": "dispatched"
+                "doc_status": "closed"
             })
             
         # ── IRS/CDS/TRS Flow (DocuSeal Signature Requests) ──
