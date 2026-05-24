@@ -1459,7 +1459,9 @@ def api_serve_document_pdf(doc_id):
                             "Content-Disposition": f"inline; filename={filename}",
                         },
                     )
-            return jsonify({"error": "Signed PDF not found on disk or in cloud storage"}), 404
+            # Gracefully fall back to serving the unsigned PDF if no signed copy is found
+            # (e.g. for FX NDF trades, or force-closed/un-signed legacy documents)
+            print(f"  ⚠️  Signed PDF requested for document {doc_id} but not found. Falling back to unsigned copy.")
 
         # ── Serving Unsigned PDF (Standard Flow) ──
         file_id = doc.get("pdf_file_id", "")
@@ -2202,10 +2204,13 @@ def api_dispatch_document(doc_id):
             for s in submitters:
                 submission_id = s.get("submission_id") or submission_id
                 role = s.get("role", "").lower()
-                if "sender" in role:
-                    sender_sign_url = s.get("url")
-                elif "counterparty" in role or "receiver" in role:
-                    counterparty_sign_url = s.get("url")
+                slug = s.get("slug")
+                sign_url = f"https://docuseal.com/d/{slug}" if slug else None
+                
+                if "sender" in role or "first" in role:
+                    sender_sign_url = sign_url
+                elif "counterparty" in role or "receiver" in role or "second" in role:
+                    counterparty_sign_url = sign_url
                     
             if submitters and not submission_id:
                 submission_id = submitters[0].get("submission_id")

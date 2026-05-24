@@ -457,7 +457,7 @@ export default function DispatchCenterUI({
             </div>
 
             {/* Expansive Builder Area */}
-            <div className="flex-1 min-h-[500px] xl:max-h-[calc(100vh-270px)] bg-slate-50 border border-slate-200/60 rounded-3xl overflow-hidden relative shadow-md">
+            <div className="w-full h-[750px] sm:h-[850px] lg:h-[950px] bg-slate-50 border border-slate-200/60 rounded-3xl overflow-hidden relative shadow-md">
               {builderToken && scriptLoaded ? (
                 React.createElement('docuseal-builder', {
                   'data-token': builderToken,
@@ -479,7 +479,7 @@ export default function DispatchCenterUI({
         {activeStep === 'self_sign' && !isFx && (
           <div className="flex-1 flex flex-col xl:flex-row gap-6 min-h-0 items-stretch animate-fade-in">
             {/* Left Panel: Spacious Embedded Self-Sign frame */}
-            <div className="flex-1 min-h-[450px] xl:max-h-[calc(100vh-280px)] bg-slate-50 border border-slate-100 rounded-3xl overflow-hidden relative shadow-inner flex flex-col">
+            <div className="w-full h-[650px] sm:h-[750px] lg:h-[800px] bg-slate-50 border border-slate-100 rounded-3xl overflow-hidden relative shadow-inner flex flex-col">
               <div className="bg-indigo-600 text-white px-6 py-3.5 flex items-center justify-between border-b border-indigo-700">
                 <div className="flex items-center gap-2">
                   <span className="text-lg">✍️</span>
