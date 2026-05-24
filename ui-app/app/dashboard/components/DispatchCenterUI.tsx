@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import { Schema } from '../types';
 import { authHeaders, API_BASE } from '../../../lib/api';
@@ -39,22 +39,57 @@ export default function DispatchCenterUI({
   const [signerEmail, setSignerEmail] = useState('');
   const [signerName, setSignerName] = useState('');
   const [customMessage, setCustomMessage] = useState('');
+  
+  // Custom Local Signature states
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [signatureImage, setSignatureImage] = useState<string | null>(null);
+  const [bankerName, setBankerName] = useState('Sanjay R');
+  const [bankerTitle, setBankerTitle] = useState('Managing Director');
+  const [stampedDate, setStampedDate] = useState(new Date().toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' }));
+  
+  // Draggable states (coordinates are represented as percentages: 0 to 100)
+  const [sigPosition, setSigPosition] = useState({ x: 25, y: 78 });
+  const [textPosition, setTextPosition] = useState({ x: 50, y: 78 });
+  const [isDraggingSig, setIsDraggingSig] = useState(false);
+  const [isDraggingText, setIsDraggingText] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+
+  // DocuSeal states
   const [builderToken, setBuilderToken] = useState<string | null>(null);
   const [scriptLoaded, setScriptLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
   const [dispatched, setDispatched] = useState(false);
-  const [senderSignUrl, setSenderSignUrl] = useState<string | null>(null);
   const [counterpartySignUrl, setCounterpartySignUrl] = useState<string | null>(null);
-  const [activeStep, setActiveStep] = useState<'recipient' | 'place_fields' | 'self_sign' | 'complete'>('recipient');
+  const [activeStep, setActiveStep] = useState<'recipient' | 'self_sign' | 'place_fields' | 'complete'>('recipient');
   const [copied, setCopied] = useState(false);
 
   const isFx = activeSchema.id === 'fx_ndf';
 
-  // Load DocuSeal builder script and fetch JWT token
+  // Initialize Canvas stroke styles
   useEffect(() => {
-    if (isFx) return; // FX doesn't use DocuSeal template builder
+    if (activeStep !== 'self_sign') return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
     
-    // Load script dynamically
+    // Scale for high DPI displays
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width * 2;
+    canvas.height = rect.height * 2;
+    ctx.scale(2, 2);
+    
+    ctx.strokeStyle = '#1e1b4b'; // dark navy signature ink
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+  }, [activeStep]);
+
+  // Load DocuSeal builder script dynamically
+  useEffect(() => {
+    if (isFx) return;
+    
     const scriptId = 'docuseal-builder-script';
     let script = document.getElementById(scriptId) as HTMLScriptElement;
     if (!script) {
@@ -67,33 +102,185 @@ export default function DispatchCenterUI({
     } else {
       setScriptLoaded(true);
     }
+  }, [isFx]);
 
-    // Fetch token from backend
-    const fetchToken = async () => {
-      try {
-        const response = await fetch(`${API_BASE}/api/documents/${docId}/builder-token`, {
-          headers: authHeaders(),
-        });
-        if (response.ok) {
-          const data = await response.json();
-          setBuilderToken(data.token);
-        } else {
-          onShowToast('⚠️ Failed to load template builder workspace');
-        }
-      } catch (e) {
-        onShowToast('❌ Network error loading template builder workspace');
+  // Fetch Token only when entering step 3 (Client Field Placement)
+  const fetchBuilderToken = async () => {
+    setLoading(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/documents/${docId}/builder-token`, {
+        headers: authHeaders(),
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setBuilderToken(data.token);
+        setActiveStep('place_fields');
+      } else {
+        onShowToast('⚠️ Failed to load template editor workspace');
       }
-    };
-    fetchToken();
-  }, [docId, isFx, onShowToast]);
+    } catch {
+      onShowToast('❌ Network error loading template editor workspace');
+    }
+    setLoading(false);
+  };
 
-  const handleDispatch = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    if (!signerEmail.trim()) {
-      onShowToast('⚠️ Signer email is required');
+  // Canvas Drawing Handlers
+  const startDrawing = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const rect = canvas.getBoundingClientRect();
+    ctx.beginPath();
+    ctx.moveTo(e.clientX - rect.left, e.clientY - rect.top);
+    setIsDrawing(true);
+  };
+
+  const draw = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!isDrawing) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const rect = canvas.getBoundingClientRect();
+    ctx.lineTo(e.clientX - rect.left, e.clientY - rect.top);
+    ctx.stroke();
+  };
+
+  const stopDrawing = () => {
+    setIsDrawing(false);
+  };
+
+  // Touch Support for mobile/tablets
+  const startDrawingTouch = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas || e.touches.length === 0) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const rect = canvas.getBoundingClientRect();
+    ctx.beginPath();
+    ctx.moveTo(e.touches[0].clientX - rect.left, e.touches[0].clientY - rect.top);
+    setIsDrawing(true);
+  };
+
+  const drawTouch = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    if (!isDrawing || e.touches.length === 0) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const rect = canvas.getBoundingClientRect();
+    ctx.lineTo(e.touches[0].clientX - rect.left, e.touches[0].clientY - rect.top);
+    ctx.stroke();
+  };
+
+  const clearCanvas = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    setSignatureImage(null);
+  };
+
+  const acceptSignature = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const dataUrl = canvas.toDataURL('image/png');
+    setSignatureImage(dataUrl);
+    onShowToast('📋 Signature captured! Position your stamp on the document.');
+  };
+
+  // Draggable Event Handlers
+  const onDragMove = (e: React.MouseEvent) => {
+    if (!isDraggingSig && !isDraggingText) return;
+    const container = e.currentTarget.getBoundingClientRect();
+    
+    const deltaX = ((e.clientX - dragStart.x) / container.width) * 100;
+    const deltaY = ((e.clientY - dragStart.y) / container.height) * 100;
+    
+    if (isDraggingSig) {
+      setSigPosition(prev => ({
+        x: Math.max(0, Math.min(100 - 15, prev.x + deltaX)),
+        y: Math.max(0, Math.min(100 - 8, prev.y + deltaY))
+      }));
+    } else if (isDraggingText) {
+      setTextPosition(prev => ({
+        x: Math.max(0, Math.min(100 - 20, prev.x + deltaX)),
+        y: Math.max(0, Math.min(100 - 12, prev.y + deltaY))
+      }));
+    }
+    setDragStart({ x: e.clientX, y: e.clientY });
+  };
+
+  const startDragSig = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setIsDraggingSig(true);
+    setDragStart({ x: e.clientX, y: e.clientY });
+  };
+
+  const startDragText = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setIsDraggingText(true);
+    setDragStart({ x: e.clientX, y: e.clientY });
+  };
+
+  const endDrag = () => {
+    setIsDraggingSig(false);
+    setIsDraggingText(false);
+  };
+
+  // Stamping and Saving locally using PyMuPDF
+  const handleLocalStamping = async () => {
+    if (!signatureImage) {
+      onShowToast('⚠️ Please draw and capture your signature first');
       return;
     }
 
+    setLoading(true);
+    try {
+      const payload = {
+        page_num: 0, // Stamps on the first page/last page based on server, lets default to 0
+        sig_x_pct: sigPosition.x / 100,
+        sig_y_pct: sigPosition.y / 100,
+        sig_w_pct: 0.16, // Fixed relative stamp width
+        sig_h_pct: 0.08, // Fixed relative stamp height
+        signature_base64: signatureImage,
+        text_fields: [
+          {
+            text: `By: ____________________\nName: ${bankerName}\nTitle: ${bankerTitle}\nDate: ${stampedDate}`,
+            x_pct: textPosition.x / 100,
+            y_pct: textPosition.y / 100
+          }
+        ]
+      };
+
+      const response = await fetch(`${API_BASE}/api/documents/${docId}/sign-local`, {
+        method: 'POST',
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        let err = 'Failed to apply signature';
+        try {
+          const d = await response.json();
+          err = d.error || err;
+        } catch {}
+        onShowToast('❌ ' + err);
+        setLoading(false);
+        return;
+      }
+
+      onShowToast('✍️ Signature applied and stitched to PDF successfully!');
+      fetchBuilderToken(); // Advance directly to client field layout
+    } catch {
+      onShowToast('❌ Server error during signature application');
+      setLoading(false);
+    }
+  };
+
+  const handleDispatch = async () => {
     setLoading(true);
     try {
       const response = await fetch(`${API_BASE}/api/documents/${docId}/dispatch`, {
@@ -125,34 +312,12 @@ export default function DispatchCenterUI({
         onShowToast('✉️ Trade Confirmation emailed successfully!');
         setActiveStep('complete');
       } else {
-        setSenderSignUrl(result.sender_sign_url);
         setCounterpartySignUrl(result.counterparty_sign_url);
-        onShowToast('✍️ E-signature workflow successfully initialized!');
-        setActiveStep('self_sign');
+        onShowToast('✉️ Signature request emailed to client!');
+        setActiveStep('complete');
       }
     } catch {
       onShowToast('❌ Network error during dispatch');
-    }
-    setLoading(false);
-  };
-
-  const handleCloseDocument = async () => {
-    setLoading(true);
-    try {
-      const response = await fetch(`${API_BASE}/api/documents/${docId}/close`, {
-        method: 'POST',
-        headers: authHeaders(),
-      });
-
-      if (response.ok) {
-        onShowToast('🔒 Document closed and archived successfully!');
-        onFetchRecentDocs();
-        onClose();
-      } else {
-        onShowToast('⚠️ Make sure both parties have signed before closing.');
-      }
-    } catch {
-      onShowToast('❌ Failed to close document');
     }
     setLoading(false);
   };
@@ -192,20 +357,20 @@ export default function DispatchCenterUI({
         </button>
       </div>
 
-      {/* Spacious Step Progress tracker */}
-      <div className="flex items-center justify-between bg-slate-50 border border-slate-100/80 p-4 rounded-3xl mb-2 shadow-sm select-none">
+      {/* Process tracker */}
+      <div className="flex items-center justify-between bg-slate-50 border border-slate-100 p-4 rounded-3xl mb-2 shadow-sm select-none">
         <div className="flex items-center justify-around w-full max-w-4xl mx-auto px-4 gap-4">
           
-          {/* Step 1 Indicator */}
+          {/* Step 1 */}
           <div className="flex items-center gap-3">
             <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-black transition-all ${
               activeStep === 'recipient' 
                 ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20 ring-4 ring-indigo-50' 
-                : ['place_fields', 'self_sign', 'complete'].includes(activeStep)
+                : ['self_sign', 'place_fields', 'complete'].includes(activeStep)
                   ? 'bg-emerald-500 text-white'
                   : 'bg-slate-200 text-slate-500'
             }`}>
-              {['place_fields', 'self_sign', 'complete'].includes(activeStep) ? '✓' : '1'}
+              {['self_sign', 'place_fields', 'complete'].includes(activeStep) ? '✓' : '1'}
             </div>
             <span className={`text-xs font-bold transition-colors hidden sm:inline ${
               activeStep === 'recipient' ? 'text-indigo-600 font-black' : 'text-slate-500'
@@ -218,30 +383,30 @@ export default function DispatchCenterUI({
             <>
               <div className="flex-1 h-0.5 max-w-[60px] bg-slate-200 rounded-full" />
               
-              {/* Step 2 Indicator */}
+              {/* Step 2 */}
               <div className="flex items-center gap-3">
                 <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-black transition-all ${
-                  activeStep === 'place_fields' 
+                  activeStep === 'self_sign' 
                     ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20 ring-4 ring-indigo-50' 
-                    : ['self_sign', 'complete'].includes(activeStep)
+                    : ['place_fields', 'complete'].includes(activeStep)
                       ? 'bg-emerald-500 text-white'
                       : 'bg-slate-200 text-slate-500'
                 }`}>
-                  {['self_sign', 'complete'].includes(activeStep) ? '✓' : '2'}
+                  {['place_fields', 'complete'].includes(activeStep) ? '✓' : '2'}
                 </div>
                 <span className={`text-xs font-bold transition-colors hidden sm:inline ${
-                  activeStep === 'place_fields' ? 'text-indigo-600 font-black' : 'text-slate-500'
+                  activeStep === 'self_sign' ? 'text-indigo-600 font-black' : 'text-slate-500'
                 }`}>
-                  Place Fields
+                  Banker Local Sign
                 </span>
               </div>
 
               <div className="flex-1 h-0.5 max-w-[60px] bg-slate-200 rounded-full" />
               
-              {/* Step 3 Indicator */}
+              {/* Step 3 */}
               <div className="flex items-center gap-3">
                 <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-black transition-all ${
-                  activeStep === 'self_sign' 
+                  activeStep === 'place_fields' 
                     ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20 ring-4 ring-indigo-50' 
                     : activeStep === 'complete'
                       ? 'bg-emerald-500 text-white'
@@ -250,9 +415,9 @@ export default function DispatchCenterUI({
                   {activeStep === 'complete' ? '✓' : '3'}
                 </div>
                 <span className={`text-xs font-bold transition-colors hidden sm:inline ${
-                  activeStep === 'self_sign' ? 'text-indigo-600 font-black' : 'text-slate-500'
+                  activeStep === 'place_fields' ? 'text-indigo-600 font-black' : 'text-slate-500'
                 }`}>
-                  Banker Self-Sign
+                  Client Field Placement
                 </span>
               </div>
             </>
@@ -260,7 +425,7 @@ export default function DispatchCenterUI({
 
           <div className="flex-1 h-0.5 max-w-[60px] bg-slate-200 rounded-full" />
 
-          {/* Final Step Indicator */}
+          {/* Step 4 */}
           <div className="flex items-center gap-3">
             <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-black transition-all ${
               activeStep === 'complete' 
@@ -284,7 +449,7 @@ export default function DispatchCenterUI({
         
         {/* ==================== STEP 1: RECIPIENT CONFIGURATION ==================== */}
         {activeStep === 'recipient' && (
-          <div className="flex-1 flex flex-col xl:flex-row gap-6 min-h-0 items-stretch">
+          <div className="flex-1 flex flex-col xl:flex-row gap-6 min-h-0 items-stretch animate-fade-in">
             {/* Left Panel: Compiled PDF Preview */}
             <div className="flex-1 min-h-[400px] xl:max-h-[calc(100vh-280px)] bg-slate-50 border border-slate-100 rounded-3xl overflow-hidden relative shadow-inner">
               <CustomPDFViewer
@@ -312,7 +477,7 @@ export default function DispatchCenterUI({
                   if (isFx) {
                     handleDispatch();
                   } else {
-                    setActiveStep('place_fields');
+                    setActiveStep('self_sign');
                   }
                 }} 
                 className="flex-1 flex flex-col gap-6"
@@ -379,7 +544,7 @@ export default function DispatchCenterUI({
                       <div>
                         <p className="text-xs font-bold text-indigo-900 leading-tight">E-Signature Requirements</p>
                         <p className="text-[10.5px] text-indigo-600/80 font-medium leading-relaxed mt-1">
-                          This asset class requires double-party execution. Next, you will place tags on the template, then complete self-signing on-page.
+                          This asset class requires double-party execution. Next, you will sign your banker portion natively on the screen.
                         </p>
                       </div>
                     </div>
@@ -400,7 +565,7 @@ export default function DispatchCenterUI({
                       </>
                     ) : (
                       <>
-                        Configure Signature Fields
+                        Configure Local Signature
                         <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                         </svg>
@@ -413,7 +578,213 @@ export default function DispatchCenterUI({
           </div>
         )}
 
-        {/* ==================== STEP 2: PLACE FIELDS (SPACIOUS BUILDER) ==================== */}
+        {/* ==================== STEP 2: BANKER LOCAL SIGNING (DRAG-AND-DROP CANVAS) ==================== */}
+        {activeStep === 'self_sign' && !isFx && (
+          <div className="flex-1 flex flex-col xl:flex-row gap-6 min-h-0 items-stretch animate-fade-in">
+            {/* Left Panel: Draggable Overlay PDF Viewer */}
+            <div 
+              onMouseMove={onDragMove}
+              onMouseUp={endDrag}
+              onMouseLeave={endDrag}
+              className="flex-1 w-full h-[650px] sm:h-[750px] lg:h-[800px] bg-slate-50 border border-slate-100 rounded-3xl relative shadow-inner overflow-hidden select-none"
+            >
+              {/* PDF Previewer */}
+              <div className="w-full h-full pointer-events-none">
+                <CustomPDFViewer
+                  pdfUrl={pdfUrl}
+                  filename={pdfFilename || 'Confirmation'}
+                  onClose={onClose}
+                  onDownload={() => {}}
+                  onPrint={() => {}}
+                  isAiCreated={false}
+                  hasExistingReport={false}
+                  hideSidebar={true}
+                  hideToolbar={true}
+                />
+              </div>
+
+              {/* Guide Overlay Banner */}
+              <div className="absolute top-4 left-4 right-4 bg-slate-900/90 backdrop-blur-sm px-5 py-3 rounded-2xl border border-slate-800 text-white flex items-center justify-between shadow-lg z-20">
+                <div className="flex items-center gap-2">
+                  <span className="text-lg">🎯</span>
+                  <span className="text-xs font-semibold leading-none">
+                    {signatureImage 
+                      ? "👉 Drag and position your Signature Stamp and Text Box exactly on the Party A lines below!" 
+                      : "👈 Draw your signature on the right-side pad, click capture, and drag your stamp!"}
+                  </span>
+                </div>
+              </div>
+
+              {/* Draggable Signature Overlay */}
+              {signatureImage && (
+                <div
+                  onMouseDown={startDragSig}
+                  style={{
+                    position: 'absolute',
+                    left: `${sigPosition.x}%`,
+                    top: `${sigPosition.y}%`,
+                    cursor: isDraggingSig ? 'grabbing' : 'grab',
+                    border: '2px dashed #f59e0b',
+                    padding: '4px',
+                    borderRadius: '8px',
+                    backgroundColor: 'rgba(251, 191, 36, 0.15)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    width: '160px',
+                    height: '70px',
+                    zIndex: 30,
+                    transition: isDraggingSig ? 'none' : 'box-shadow 0.2s'
+                  }}
+                  className="shadow-md hover:shadow-lg"
+                >
+                  <img src={signatureImage} alt="Signature Stamp" className="max-w-full max-h-full object-contain pointer-events-none" />
+                  <span className="text-[8px] bg-amber-500 text-white font-extrabold px-1 py-0.5 rounded absolute -top-2.5 right-2 uppercase tracking-wider scale-90">
+                    Signature
+                  </span>
+                </div>
+              )}
+
+              {/* Draggable Text Overlay */}
+              {signatureImage && (
+                <div
+                  onMouseDown={startDragText}
+                  style={{
+                    position: 'absolute',
+                    left: `${textPosition.x}%`,
+                    top: `${textPosition.y}%`,
+                    cursor: isDraggingText ? 'grabbing' : 'grab',
+                    border: '2px dashed #6366f1',
+                    padding: '6px 10px',
+                    borderRadius: '8px',
+                    backgroundColor: 'rgba(99, 102, 241, 0.12)',
+                    zIndex: 30,
+                    width: '220px',
+                    fontSize: '9px',
+                    fontWeight: 700,
+                    fontFamily: 'monospace',
+                    lineHeight: '1.4',
+                    color: '#1e1b4b',
+                    transition: isDraggingText ? 'none' : 'box-shadow 0.2s'
+                  }}
+                  className="shadow-md hover:shadow-lg whitespace-pre-line"
+                >
+                  {`By: ____________________\nName: ${bankerName}\nTitle: ${bankerTitle}\nDate: ${stampedDate}`}
+                  <span className="text-[8px] bg-indigo-600 text-white font-extrabold px-1 py-0.5 rounded absolute -top-2.5 right-2 uppercase tracking-wider scale-90">
+                    Signing block
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {/* Right Panel: Banker Drawing Pad & text details */}
+            <div className="w-full xl:w-[460px] bg-white border border-slate-100 rounded-3xl shadow-xl flex flex-col p-6 sm:p-8 min-w-0 shrink-0">
+              <div className="flex-1 flex flex-col gap-5">
+                <div className="flex flex-col gap-1">
+                  <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-full uppercase tracking-wider w-fit">
+                    Step 2 of 4
+                  </span>
+                  <h3 className="text-xl font-black text-slate-800 tracking-tight">Banker Signature Pad</h3>
+                  <p className="text-xs text-slate-400 font-semibold leading-relaxed">
+                    Draw your signature in the frame below, fill in your credentials, and stamp them onto the trade document.
+                  </p>
+                </div>
+
+                {/* Drawing pad Canvas */}
+                <div className="flex flex-col gap-2">
+                  <label className="text-xs font-black text-slate-500 uppercase tracking-widest">Draw Signature</label>
+                  <div className="w-full h-[180px] bg-slate-50 border-2 border-dashed border-slate-200 rounded-2xl overflow-hidden relative shadow-inner">
+                    <canvas
+                      ref={canvasRef}
+                      onMouseDown={startDrawing}
+                      onMouseMove={draw}
+                      onMouseUp={stopDrawing}
+                      onMouseLeave={stopDrawing}
+                      onTouchStart={startDrawingTouch}
+                      onTouchMove={drawTouch}
+                      onTouchEnd={stopDrawing}
+                      className="w-full h-full cursor-crosshair"
+                    />
+                    
+                    {/* Clear Button */}
+                    <button
+                      onClick={clearCanvas}
+                      type="button"
+                      className="absolute bottom-3 right-3 px-3 py-1.5 bg-slate-900/80 hover:bg-slate-900 text-white text-[10px] font-bold rounded-lg transition-all"
+                    >
+                      Clear Pad
+                    </button>
+                  </div>
+                  
+                  <button
+                    onClick={acceptSignature}
+                    type="button"
+                    className="w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-all"
+                  >
+                    Capture Signature Stroke
+                  </button>
+                </div>
+
+                {/* Text fields */}
+                <div className="flex flex-col gap-3 mt-1">
+                  <div className="flex flex-col gap-1.5">
+                    <label htmlFor="b-name" className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Signatory Name</label>
+                    <input
+                      type="text"
+                      id="b-name"
+                      value={bankerName}
+                      onChange={(e) => setBankerName(e.target.value)}
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 text-xs font-bold text-slate-800"
+                    />
+                  </div>
+
+                  <div className="flex flex-col gap-1.5">
+                    <label htmlFor="b-title" className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Corporate Title</label>
+                    <input
+                      type="text"
+                      id="b-title"
+                      value={bankerTitle}
+                      onChange={(e) => setBankerTitle(e.target.value)}
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 text-xs font-bold text-slate-800"
+                    />
+                  </div>
+                </div>
+
+                <div className="mt-auto pt-4 flex flex-col gap-2">
+                  <button
+                    onClick={handleLocalStamping}
+                    disabled={loading || !signatureImage}
+                    className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl shadow-xl shadow-indigo-600/10 text-sm flex items-center justify-center gap-2 transition-all active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                  >
+                    {loading ? (
+                      <>
+                        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                        Stitching Signature...
+                      </>
+                    ) : (
+                      <>
+                        <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                        </svg>
+                        Apply & Stitch Signature
+                      </>
+                    )}
+                  </button>
+                  
+                  <button
+                    onClick={() => setActiveStep('recipient')}
+                    className="w-full py-2.5 text-xs font-bold text-slate-400 hover:text-slate-600 transition-colors text-center"
+                  >
+                    Back to Recipient Setup
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ==================== STEP 3: PLACE FIELDS (SPACIOUS BUILDER) ==================== */}
         {activeStep === 'place_fields' && !isFx && (
           <div className="flex-1 flex flex-col gap-4 animate-fade-in">
             {/* Full-screen dominant builder space */}
@@ -421,32 +792,32 @@ export default function DispatchCenterUI({
               <div className="flex items-start sm:items-center gap-2">
                 <span className="text-xl">🛠️</span>
                 <div>
-                  <h4 className="text-xs font-black text-indigo-900">Step 2 of 4: Document Field Configurator</h4>
+                  <h4 className="text-xs font-black text-indigo-900">Step 3 of 4: Client signature Placeholders</h4>
                   <p className="text-[11px] text-indigo-700/80 font-medium">
-                    Drag and drop signature fields from the right sidebar onto the PDF page below. Tag boxes specifically for both <strong>Sender</strong> and <strong>Counterparty</strong>.
+                    Drag the Client's signature boxes onto the document template below. Since your signature is already permanently stamped on the PDF, there is only one role to configure: <strong>Client</strong>.
                   </p>
                 </div>
               </div>
               <div className="flex items-center gap-3 shrink-0">
                 <button
-                  onClick={() => setActiveStep('recipient')}
+                  onClick={() => setActiveStep('self_sign')}
                   className="px-4 py-2 bg-white hover:bg-slate-50 text-slate-600 rounded-xl text-xs font-bold transition-all border border-slate-200 cursor-pointer"
                 >
-                  ⬅️ Back to Recipient
+                  ⬅️ Back to Banker Sign
                 </button>
                 <button
-                  onClick={() => handleDispatch()}
+                  onClick={handleDispatch}
                   disabled={loading}
-                  className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-indigo-600/10 flex items-center gap-1.5 cursor-pointer"
+                  className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-indigo-600/10 flex items-center gap-1.5 cursor-pointer font-inter"
                 >
                   {loading ? (
                     <>
                       <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                      Initializing...
+                      Dispatching...
                     </>
                   ) : (
                     <>
-                      Prepare & Sign Document
+                      Send to Client
                       <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="3" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                       </svg>
@@ -475,119 +846,6 @@ export default function DispatchCenterUI({
           </div>
         )}
 
-        {/* ==================== STEP 3: BANKER SELF-SIGNING ==================== */}
-        {activeStep === 'self_sign' && !isFx && (
-          <div className="flex-1 flex flex-col xl:flex-row gap-6 min-h-0 items-stretch animate-fade-in">
-            {/* Left Panel: Spacious Embedded Self-Sign frame */}
-            <div className="w-full h-[650px] sm:h-[750px] lg:h-[800px] bg-slate-50 border border-slate-100 rounded-3xl overflow-hidden relative shadow-inner flex flex-col">
-              <div className="bg-indigo-600 text-white px-6 py-3.5 flex items-center justify-between border-b border-indigo-700">
-                <div className="flex items-center gap-2">
-                  <span className="text-lg">✍️</span>
-                  <span className="text-xs font-black uppercase tracking-wider">Banker Signature Pad</span>
-                </div>
-                <span className="text-[10px] bg-indigo-500 px-2 py-0.5 rounded font-bold uppercase">On Screen</span>
-              </div>
-              
-              <div className="flex-1 relative bg-white">
-                {senderSignUrl ? (
-                  <iframe
-                    src={senderSignUrl}
-                    className="w-full h-full border-none"
-                    title="Self-Signing Iframe"
-                  />
-                ) : (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-slate-50">
-                    <div className="w-10 h-10 border-4 border-slate-200 border-t-indigo-500 rounded-full animate-spin" />
-                    <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">
-                      Generating signature pad...
-                    </p>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Right Panel: Actions & Client links */}
-            <div className="w-full xl:w-[460px] bg-white border border-slate-100 rounded-3xl shadow-xl flex flex-col p-6 sm:p-8 min-w-0 shrink-0">
-              <div className="flex-1 flex flex-col gap-6">
-                <div className="flex flex-col gap-1.5">
-                  <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-full uppercase tracking-wider w-fit">
-                    Step 3 of 4
-                  </span>
-                  <h3 className="text-xl font-black text-slate-800 tracking-tight">Sign Your Copy</h3>
-                  <p className="text-xs text-slate-400 font-semibold leading-relaxed">
-                    To execute this trade confirmation legally, please place and complete your signature on the left-side frame.
-                  </p>
-                </div>
-
-                <div className="flex flex-col gap-4 mt-2">
-                  <div className="bg-slate-50 p-5 rounded-2xl border border-slate-200/50 flex flex-col gap-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                        Client Signature Link
-                      </span>
-                      <span className="text-[9px] font-extrabold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded uppercase tracking-wider">
-                        Emailed
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="text"
-                        readOnly
-                        value={counterpartySignUrl || ''}
-                        className="flex-1 bg-white border border-slate-200 px-3 py-2 rounded-xl text-xs text-slate-500 font-semibold truncate outline-none select-all"
-                      />
-                      <button
-                        onClick={handleCopyLink}
-                        className="px-3.5 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-xl text-xs font-bold transition-all border border-indigo-100 cursor-pointer shrink-0"
-                      >
-                        {copied ? 'Copied' : 'Copy'}
-                      </button>
-                    </div>
-                    <p className="text-[10px] text-slate-400 font-medium leading-relaxed">
-                      The counterparty has been automatically invited via Resend email, but you can copy and send this link manually as a backup.
-                    </p>
-                  </div>
-
-                  <div className="bg-emerald-50/50 p-4.5 rounded-2xl border border-emerald-100 flex items-start gap-3 mt-1">
-                    <span className="text-lg leading-none">🚀</span>
-                    <div>
-                      <p className="text-xs font-bold text-emerald-950 leading-tight">Client Invitation Dispatched</p>
-                      <p className="text-[10.5px] text-emerald-700/80 font-medium leading-relaxed mt-1">
-                        An email containing the signature link has been sent to <strong>{signerEmail}</strong>.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="mt-auto pt-6 flex flex-col gap-3">
-                  <button
-                    onClick={handleCloseDocument}
-                    disabled={loading}
-                    className="w-full py-4.5 bg-teal-600 hover:bg-teal-700 text-white font-bold rounded-2xl shadow-xl shadow-teal-600/10 text-sm flex items-center justify-center gap-2 transition-all active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-                  >
-                    {loading ? (
-                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    ) : (
-                      <>
-                        <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        </svg>
-                        Finalize & Close Trade
-                      </>
-                    )}
-                  </button>
-                  <button
-                    onClick={() => setActiveStep('complete')}
-                    className="w-full py-3 text-xs font-black text-slate-400 hover:text-slate-600 transition-colors text-center"
-                  >
-                    Skip to Completed View
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* ==================== STEP 4 / COMPLETE STATE ==================== */}
         {activeStep === 'complete' && (
           <div className="flex-1 flex items-center justify-center p-6 animate-fade-in select-none">
@@ -608,7 +866,7 @@ export default function DispatchCenterUI({
                 <p className="text-xs text-slate-400 font-semibold leading-relaxed px-4">
                   {isFx 
                     ? 'The FX NDF Trade Confirmation has been emailed directly and archived successfully in the legal vaults.'
-                    : 'The double-party execution workflow has been initialized and signed on your side. The client will complete their signature shortly.'
+                    : 'The signature request has been dispatched. The trade will be archived automatically once signed.'
                   }
                 </p>
               </div>
@@ -644,14 +902,6 @@ export default function DispatchCenterUI({
                 >
                   Back to My Documents
                 </button>
-                {!isFx && (
-                  <button
-                    onClick={handleCloseDocument}
-                    className="w-full py-3.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl text-xs font-bold transition-all cursor-pointer"
-                  >
-                    Force Close & Archive Trade
-                  </button>
-                )}
               </div>
             </div>
           </div>

@@ -2099,6 +2099,147 @@ def api_get_builder_token(doc_id):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/documents/<doc_id>/sign-local", methods=["POST"])
+@require_auth
+def api_sign_document_local(doc_id):
+    """
+    Stamps the Banker's drawn signature and text fields onto the trade PDF locally using PyMuPDF.
+    Saves the partially signed PDF and clears docuseal_template_id to trigger a fresh template upload.
+    """
+    try:
+        body = _json_body()
+        page_num = int(body.get("page_num", 0))
+        sig_x_pct = float(body.get("sig_x_pct", 0.0))
+        sig_y_pct = float(body.get("sig_y_pct", 0.0))
+        sig_w_pct = float(body.get("sig_w_pct", 0.0))
+        sig_h_pct = float(body.get("sig_h_pct", 0.0))
+        
+        signature_base64 = str(body.get("signature_base64", ""))
+        text_fields = body.get("text_fields", [])
+        
+        if not signature_base64:
+            return jsonify({"error": "Signature data is required"}), 400
+            
+        db = get_db()
+        oid = ObjectId(doc_id)
+        
+        doc_record = db.documents.find_one({"_id": oid, "user_id": g.current_user_id})
+        collection = db.documents
+        if not doc_record:
+            doc_record = db.drafts.find_one({"_id": oid, "user_id": g.current_user_id})
+            collection = db.drafts
+            
+        if not doc_record:
+            return jsonify({"error": "Document not found"}), 404
+            
+        # Parse base64 signature image
+        if "base64," in signature_base64:
+            signature_base64 = signature_base64.split("base64,", 1)[1]
+        signature_bytes = base64.b64decode(signature_base64)
+        
+        # Resolve original PDF file path
+        file_id = doc_record.get("pdf_file_id", "")
+        if not file_id:
+            return jsonify({"error": "Compiled PDF file not found. Please compile the PDF first."}), 404
+            
+        pdf_path, pdf_filename = _resolve_generated_pdf({"pdf_file_id": file_id})
+        if not pdf_path or not os.path.exists(pdf_path):
+            # Try GCS fallback
+            gcs_path = doc_record.get("gcs_object_path", "")
+            if gcs_path:
+                pdf_bytes = _download_from_gcs(gcs_path)
+                if pdf_bytes:
+                    # Write to local disk to stamp it
+                    os.makedirs(os.path.dirname(pdf_path), exist_ok=True)
+                    with open(pdf_path, "wb") as f:
+                        f.write(pdf_bytes)
+            
+        if not pdf_path or not os.path.exists(pdf_path):
+            return jsonify({"error": "Original PDF document could not be resolved on disk"}), 404
+            
+        # Open PDF using PyMuPDF (fitz)
+        import fitz
+        doc_pdf = fitz.open(pdf_path)
+        
+        if page_num < 0 or page_num >= len(doc_pdf):
+            doc_pdf.close()
+            return jsonify({"error": f"Invalid page number {page_num}. Document has {len(doc_pdf)} pages."}), 400
+            
+        page = doc_pdf[page_num]
+        page_w = page.rect.width
+        page_h = page.rect.height
+        
+        # 1. Overlay Signature Image
+        sig_x = sig_x_pct * page_w
+        sig_y = sig_y_pct * page_h
+        sig_w = sig_w_pct * page_w
+        sig_h = sig_h_pct * page_h
+        
+        sig_rect = fitz.Rect(sig_x, sig_y, sig_x + sig_w, sig_y + sig_h)
+        page.insert_image(sig_rect, stream=signature_bytes)
+        
+        # 2. Overlay Text Fields
+        for t in text_fields:
+            text = str(t.get("text", "")).strip()
+            x_pct = float(t.get("x_pct", 0.0))
+            y_pct = float(t.get("y_pct", 0.0))
+            if not text:
+                continue
+            
+            # Map percentages to fitz coordinates
+            tx = x_pct * page_w
+            ty = y_pct * page_h
+            # In PyMuPDF, insert_text needs baseline coordinate, ty is the top, so we shift down slightly for baseline
+            page.insert_text(fitz.Point(tx, ty + 10), text, fontsize=10, fontname="helv", color=(0.1, 0.1, 0.1))
+            
+        # Save modifications to a temp file first
+        temp_path = pdf_path + ".signed"
+        doc_pdf.save(temp_path)
+        doc_pdf.close()
+        
+        # Replace the original PDF with the stamped PDF
+        os.replace(temp_path, pdf_path)
+        
+        # 3. If GCS is enabled, upload the partially signed PDF to GCS to overwrite the unsigned one
+        gcs_object_path = doc_record.get("gcs_object_path", "")
+        if GCS_AVAILABLE and GCS_BUCKET_NAME and gcs_object_path:
+            try:
+                client = _storage_client()
+                if client:
+                    bucket = client.bucket(GCS_BUCKET_NAME)
+                    blob = bucket.blob(gcs_object_path)
+                    with open(pdf_path, "rb") as f:
+                        blob.upload_from_string(f.read(), content_type="application/pdf")
+                    print(f"  ☁️  Partially signed PDF synced to GCS: {gcs_object_path}")
+            except Exception as e:
+                print(f"  ⚠️  Error uploading stamped PDF to GCS: {e}")
+                
+        # 4. Save updates in MongoDB:
+        # Clear docuseal_template_id to trigger a fresh template upload with the signed PDF!
+        # Mark banker_signed as True
+        now = datetime.now(timezone.utc).isoformat()
+        collection.update_one(
+            {"_id": oid},
+            {"$set": {
+                "banker_signed": True,
+                "docuseal_template_id": None,
+                "docuseal_submission_id": None,
+                "updated_at": now
+            }}
+        )
+        
+        print(f"  ✍️  Document {doc_id} successfully signed locally by banker!")
+        return jsonify({
+            "status": "success",
+            "message": "Signature applied successfully",
+            "banker_signed": True
+        })
+        
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/documents/<doc_id>/dispatch", methods=["POST"])
 @require_auth
 def api_dispatch_document(doc_id):
