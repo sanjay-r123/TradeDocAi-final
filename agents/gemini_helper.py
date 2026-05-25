@@ -25,11 +25,14 @@ _client = None
 
 def _get_client():
     global _client
-    api_key = os.getenv("GEMINI_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY is not set. AI endpoints are unavailable until it is configured.")
     if _client is None:
-        _client = genai.Client(api_key=api_key)
+        api_key = os.getenv("GEMINI_API_KEY", "")
+        if api_key and api_key.strip():
+            _client = genai.Client(api_key=api_key)
+        else:
+            # Fall back to using standard Google Application Default Credentials (Vertex AI service account)
+            # The SDK automatically uses the GOOGLE_APPLICATION_CREDENTIALS env variable pointing to your JSON key
+            _client = genai.Client(vertexai=True)
     return _client
 
 

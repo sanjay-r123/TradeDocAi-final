@@ -1205,7 +1205,7 @@ def _sync_docuseal_submission(doc, db, collection):
                     
                 now = datetime.now(timezone.utc).isoformat()
                 update_fields = {
-                    "status": "signed",
+                    "status": "closed",
                     "signed_pdf_url": f"/api/documents/{doc_id}/pdf?type=signed",
                     "updated_at": now
                 }
@@ -1213,7 +1213,7 @@ def _sync_docuseal_submission(doc, db, collection):
                     update_fields["gcs_signed_path"] = gcs_signed_path
                     
                 collection.update_one({"_id": doc["_id"]}, {"$set": update_fields})
-                print(f"  ✅ [Sync] Document {doc_id} successfully transitioned to 'signed' status via self-healing!")
+                print(f"  ✅ [Sync] Document {doc_id} successfully transitioned to 'closed' status via self-healing!")
                 
                 # Return refreshed document to caller
                 updated_doc = collection.find_one({"_id": doc["_id"]})
@@ -2264,9 +2264,14 @@ def api_sign_document_local(doc_id):
                     with open(pdf_path, "wb") as f:
                         f.write(pdf_bytes)
             
-        if not pdf_path or not os.path.exists(pdf_path):
-            return jsonify({"error": "Original PDF document could not be resolved on disk"}), 404
-            
+        # Keep a backup of the original unsigned PDF so we can re-stamp from clean copy if the user adjusts layout!
+        unsigned_backup = pdf_path + ".unsigned"
+        if not os.path.exists(unsigned_backup):
+            shutil.copy2(pdf_path, unsigned_backup)
+        else:
+            # Restore the clean unsigned PDF from backup before applying new stamp positions
+            shutil.copy2(unsigned_backup, pdf_path)
+
         # Open PDF using PyMuPDF (fitz)
         import fitz
         doc_pdf = fitz.open(pdf_path)
@@ -2594,7 +2599,7 @@ def api_docuseal_webhook():
                 
             now = datetime.now(timezone.utc).isoformat()
             update_fields = {
-                "status": "signed",
+                "status": "closed",
                 "signed_pdf_url": f"/api/documents/{doc_id}/pdf?type=signed",
                 "updated_at": now
             }
@@ -2604,7 +2609,7 @@ def api_docuseal_webhook():
             collection = db.documents if db.documents.find_one({"_id": ObjectId(doc_id)}) else db.drafts
             collection.update_one({"_id": ObjectId(doc_id)}, {"$set": update_fields})
             
-            print(f"  ✅ Document {doc_id} successfully transitioned to 'signed' status!")
+            print(f"  ✅ Document {doc_id} successfully transitioned to 'closed' status!")
             
             signer_email = doc.get("signer_email")
             if signer_email:
