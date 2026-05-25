@@ -20,6 +20,7 @@ interface PlacedField {
   h: number;
   value: string;
   fontSize?: number;
+  pageIndex?: number;
 }
 
 interface LocalSigningCanvasProps {
@@ -36,10 +37,10 @@ interface LocalSigningCanvasProps {
   endDrag: () => void;
   startDrag: (e: React.MouseEvent, id: string) => void;
   startResize: (e: React.MouseEvent, id: string, handle: 'tl' | 'tr' | 'bl' | 'br') => void;
-  addFieldAtPosition: (type: 'signature' | 'text' | 'date', px: number, py: number) => void;
+  addFieldAtPosition: (type: 'signature' | 'text' | 'date', px: number, py: number, pageIndex: number) => void;
   signatureImage: string | null;
   setShowSigModal: (show: boolean) => void;
-  setPendingSigCoords: (coords: { x: number, y: number } | null) => void;
+  setPendingSigCoords: (coords: { x: number, y: number, pageIndex: number } | null) => void;
 }
 
 export default function LocalSigningCanvas({
@@ -61,6 +62,13 @@ export default function LocalSigningCanvas({
   setShowSigModal,
   setPendingSigCoords,
 }: LocalSigningCanvasProps) {
+  const [numPages, setNumPages] = React.useState<number | null>(null);
+  const [currentPage, setCurrentPage] = React.useState<number>(1);
+
+  const onDocumentLoadSuccess = ({ numPages }: { numPages: number }) => {
+    setNumPages(numPages);
+  };
+
   return (
     <div 
       onMouseMove={onDragMove}
@@ -128,6 +136,7 @@ export default function LocalSigningCanvas({
       >
         <Document
           file={pdfUrl}
+          onLoadSuccess={onDocumentLoadSuccess}
           loading={
             <div className="w-[600px] h-[800px] bg-white animate-pulse flex flex-col items-center justify-center gap-3">
               <div className="w-8 h-8 border-4 border-slate-200 border-t-indigo-500 rounded-full animate-spin" />
@@ -136,7 +145,7 @@ export default function LocalSigningCanvas({
           }
         >
           <Page
-            pageNumber={1}
+            pageNumber={currentPage}
             width={600}
             renderTextLayer={false}
             renderAnnotationLayer={false}
@@ -150,7 +159,7 @@ export default function LocalSigningCanvas({
             const rect = e.currentTarget.getBoundingClientRect();
             const px = ((e.clientX - rect.left) / rect.width) * 100;
             const py = ((e.clientY - rect.top) / rect.height) * 100;
-            addFieldAtPosition(selectedTool, px, py);
+            addFieldAtPosition(selectedTool, px, py, currentPage - 1);
           }}
           style={{
             cursor: selectedTool ? 'crosshair' : 'default'
@@ -159,7 +168,9 @@ export default function LocalSigningCanvas({
         />
 
         {/* Dynamic Drag-and-Drop / Resizable Fields inside the exact container */}
-        {placedFields.map((field) => {
+        {placedFields
+          .filter((field) => (field.pageIndex ?? 0) === currentPage - 1)
+          .map((field) => {
           const isSelected = selectedFieldId === field.id;
           const isSig = field.type === 'signature';
           
@@ -295,6 +306,39 @@ export default function LocalSigningCanvas({
             </div>
           );
         })}
+      </div>
+
+      {/* Sleek, Glassmorphic Bottom Page Controls */}
+      <div className="flex items-center gap-4 bg-slate-900/95 backdrop-blur-md px-4 py-2 rounded-full border border-slate-800 text-white shadow-xl mt-6 select-none z-20 shrink-0">
+        <button
+          type="button"
+          disabled={currentPage <= 1}
+          onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+          className={`p-1.5 rounded-lg transition-all ${
+            currentPage <= 1 ? 'text-slate-600 cursor-not-allowed' : 'text-slate-300 hover:bg-slate-800 cursor-pointer'
+          }`}
+          title="Previous Page"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
+          </svg>
+        </button>
+        <span className="text-xs font-bold text-slate-300 min-w-[80px] text-center font-mono">
+          Page {currentPage} of {numPages || 1}
+        </span>
+        <button
+          type="button"
+          disabled={currentPage >= (numPages || 1)}
+          onClick={() => setCurrentPage(prev => Math.min(numPages || 1, prev + 1))}
+          className={`p-1.5 rounded-lg transition-all ${
+            currentPage >= (numPages || 1) ? 'text-slate-600 cursor-not-allowed' : 'text-slate-300 hover:bg-slate-800 cursor-pointer'
+          }`}
+          title="Next Page"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+          </svg>
+        </button>
       </div>
     </div>
   );

@@ -2215,16 +2215,24 @@ def api_sign_document_local(doc_id):
     """
     try:
         body = _json_body()
-        page_num = int(body.get("page_num", 0))
-        sig_x_pct = float(body.get("sig_x_pct", 0.0))
-        sig_y_pct = float(body.get("sig_y_pct", 0.0))
-        sig_w_pct = float(body.get("sig_w_pct", 0.0))
-        sig_h_pct = float(body.get("sig_h_pct", 0.0))
         
-        signature_base64 = str(body.get("signature_base64", ""))
+        signatures = body.get("signatures", [])
         text_fields = body.get("text_fields", [])
+        global_page_num = int(body.get("page_num", 0))
         
-        if not signature_base64:
+        # Backward compatibility fallback for single signature properties
+        if not signatures and body.get("signature_base64"):
+            sig_base64 = str(body.get("signature_base64", ""))
+            signatures = [{
+                "page_num": global_page_num,
+                "x_pct": float(body.get("sig_x_pct", 0.0)),
+                "y_pct": float(body.get("sig_y_pct", 0.0)),
+                "w_pct": float(body.get("sig_w_pct", 0.0)),
+                "h_pct": float(body.get("sig_h_pct", 0.0)),
+                "base64": sig_base64
+            }]
+            
+        if not signatures and not body.get("signature_base64"):
             return jsonify({"error": "Signature data is required"}), 400
             
         db = get_db()
@@ -2239,11 +2247,6 @@ def api_sign_document_local(doc_id):
         if not doc_record:
             return jsonify({"error": "Document not found"}), 404
             
-        # Parse base64 signature image
-        if "base64," in signature_base64:
-            signature_base64 = signature_base64.split("base64,", 1)[1]
-        signature_bytes = base64.b64decode(signature_base64)
-        
         # Resolve original PDF file path
         file_id = doc_record.get("pdf_file_id", "")
         if not file_id:
@@ -2267,37 +2270,69 @@ def api_sign_document_local(doc_id):
         # Open PDF using PyMuPDF (fitz)
         import fitz
         doc_pdf = fitz.open(pdf_path)
+        num_pages = len(doc_pdf)
         
-        if page_num < 0 or page_num >= len(doc_pdf):
-            doc_pdf.close()
-            return jsonify({"error": f"Invalid page number {page_num}. Document has {len(doc_pdf)} pages."}), 400
+        # Validate all page numbers beforehand
+        for sig in signatures:
+            p_num = int(sig.get("page_num", 0))
+            if p_num < 0 or p_num >= num_pages:
+                doc_pdf.close()
+                return jsonify({"error": f"Invalid signature page number {p_num}. Document has {num_pages} pages."}), 400
+                
+        for t in text_fields:
+            p_num = int(t.get("page_num", global_page_num))
+            if p_num < 0 or p_num >= num_pages:
+                doc_pdf.close()
+                return jsonify({"error": f"Invalid text field page number {p_num}. Document has {num_pages} pages."}), 400
+                
+        # 1. Overlay Signature Images across respective pages
+        for sig in signatures:
+            p_num = int(sig.get("page_num", 0))
+            sig_base64 = str(sig.get("base64", ""))
+            if not sig_base64:
+                continue
+                
+            if "base64," in sig_base64:
+                sig_base64 = sig_base64.split("base64,", 1)[1]
             
-        page = doc_pdf[page_num]
-        page_w = page.rect.width
-        page_h = page.rect.height
+            try:
+                signature_bytes = base64.b64decode(sig_base64)
+            except Exception as e:
+                doc_pdf.close()
+                return jsonify({"error": f"Invalid signature base64 encoding: {str(e)}"}), 400
+                
+            page = doc_pdf[p_num]
+            page_w = page.rect.width
+            page_h = page.rect.height
+            
+            sig_x = float(sig.get("x_pct", 0.0)) * page_w
+            sig_y = float(sig.get("y_pct", 0.0)) * page_h
+            sig_w = float(sig.get("w_pct", 0.0)) * page_w
+            sig_h = float(sig.get("h_pct", 0.0)) * page_h
+            
+            sig_rect = fitz.Rect(sig_x, sig_y, sig_x + sig_w, sig_y + sig_h)
+            page.insert_image(sig_rect, stream=signature_bytes)
         
-        # 1. Overlay Signature Image
-        sig_x = sig_x_pct * page_w
-        sig_y = sig_y_pct * page_h
-        sig_w = sig_w_pct * page_w
-        sig_h = sig_h_pct * page_h
-        
-        sig_rect = fitz.Rect(sig_x, sig_y, sig_x + sig_w, sig_y + sig_h)
-        page.insert_image(sig_rect, stream=signature_bytes)
-        
-        # 2. Overlay Text Fields
+        # 2. Overlay Text Fields across respective pages
         for t in text_fields:
             text = str(t.get("text", "")).strip()
-            x_pct = float(t.get("x_pct", 0.0))
-            y_pct = float(t.get("y_pct", 0.0))
             if not text:
                 continue
+                
+            p_num = int(t.get("page_num", global_page_num))
+            x_pct = float(t.get("x_pct", 0.0))
+            y_pct = float(t.get("y_pct", 0.0))
+            f_size = int(t.get("fontSize", 10))
+            
+            page = doc_pdf[p_num]
+            page_w = page.rect.width
+            page_h = page.rect.height
             
             # Map percentages to fitz coordinates
             tx = x_pct * page_w
             ty = y_pct * page_h
             # In PyMuPDF, insert_text needs baseline coordinate, ty is the top, so we shift down slightly for baseline
-            page.insert_text(fitz.Point(tx, ty + 10), text, fontsize=10, fontname="helv", color=(0.1, 0.1, 0.1))
+            page.insert_text(fitz.Point(tx, ty + f_size - 1), text, fontsize=f_size, fontname="helv", color=(0.1, 0.1, 0.1))
             
         # Save modifications to a temp file first
         temp_path = pdf_path + ".signed"

@@ -37,6 +37,7 @@ interface PlacedField {
   h: number;
   value: string;
   fontSize?: number;
+  pageIndex?: number;
 }
 
 interface DispatchCenterUIProps {
@@ -72,10 +73,10 @@ export default function DispatchCenterUI({
   
   // Acrobat / DocuSeal Dynamic Fields State
   const [placedFields, setPlacedFields] = useState<PlacedField[]>([
-    { id: 'sig', type: 'signature', label: 'Signature', x: 25, y: 78, w: 16, h: 8, value: '' },
-    { id: 'name', type: 'name', label: 'Signatory Name', x: 45, y: 76, w: 22, h: 5, value: 'Sanjay R' },
-    { id: 'title', type: 'title', label: 'Corporate Title', x: 45, y: 81, w: 22, h: 5, value: 'Managing Director' },
-    { id: 'date', type: 'date', label: 'Signing Date', x: 45, y: 86, w: 22, h: 5, value: new Date().toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' }) }
+    { id: 'sig', type: 'signature', label: 'Signature', x: 25, y: 78, w: 16, h: 8, value: '', pageIndex: 0 },
+    { id: 'name', type: 'name', label: 'Signatory Name', x: 45, y: 76, w: 22, h: 5, value: 'Sanjay R', pageIndex: 0 },
+    { id: 'title', type: 'title', label: 'Corporate Title', x: 45, y: 81, w: 22, h: 5, value: 'Managing Director', pageIndex: 0 },
+    { id: 'date', type: 'date', label: 'Signing Date', x: 45, y: 86, w: 22, h: 5, value: new Date().toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' }), pageIndex: 0 }
   ]);
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
   const [selectedFieldId, setSelectedFieldId] = useState<string | null>(null);
@@ -88,7 +89,7 @@ export default function DispatchCenterUI({
   const [showSigModal, setShowSigModal] = useState(false);
   const [sigModalTab, setSigModalTab] = useState<'draw' | 'upload' | 'type'>('draw');
   const [typedName, setTypedName] = useState('Sanjay R');
-  const [pendingSigCoords, setPendingSigCoords] = useState<{ x: number, y: number } | null>(null);
+  const [pendingSigCoords, setPendingSigCoords] = useState<{ x: number, y: number, pageIndex: number } | null>(null);
 
   // Dynamically load elegant handwriting fonts for type-to-sign signatures
   useEffect(() => {
@@ -270,12 +271,12 @@ export default function DispatchCenterUI({
     
     // If we had a click waiting for signature, place it now
     if (pendingSigCoords) {
-      placeSignatureAtCoords(dataUrl, pendingSigCoords.x, pendingSigCoords.y);
+      placeSignatureAtCoords(dataUrl, pendingSigCoords.x, pendingSigCoords.y, pendingSigCoords.pageIndex);
       setPendingSigCoords(null);
     }
   };
 
-  const placeSignatureAtCoords = (dataUrl: string, px: number, py: number) => {
+  const placeSignatureAtCoords = (dataUrl: string, px: number, py: number, pageIndex: number = 0) => {
     const id = `sig_${Date.now()}`;
     const width = 16;
     const height = 8;
@@ -287,7 +288,8 @@ export default function DispatchCenterUI({
       y: Math.max(0, Math.min(100 - height, py - height / 2)),
       w: width,
       h: height,
-      value: dataUrl
+      value: dataUrl,
+      pageIndex: pageIndex
     };
     setPlacedFields(prev => [...prev.filter(f => f.type !== 'signature' || f.value !== ''), newField]);
     setSelectedFieldId(id);
@@ -309,7 +311,7 @@ export default function DispatchCenterUI({
   };
 
   // Acrobat Click-to-Place Tool Spawner
-  const addFieldAtPosition = (type: 'signature' | 'text' | 'date', px: number, py: number) => {
+  const addFieldAtPosition = (type: 'signature' | 'text' | 'date', px: number, py: number, pageIndex: number = 0) => {
     const id = `${type}_${Date.now()}`;
     let label = '';
     let defaultValue = '';
@@ -324,7 +326,7 @@ export default function DispatchCenterUI({
         height = 8;
         if (!signatureImage) {
           setShowSigModal(true);
-          setPendingSigCoords({ x: px, y: py });
+          setPendingSigCoords({ x: px, y: py, pageIndex });
           setSelectedTool(null);
           return;
         }
@@ -352,7 +354,8 @@ export default function DispatchCenterUI({
       w: width,
       h: height,
       value: defaultValue,
-      fontSize: 11
+      fontSize: 11,
+      pageIndex: pageIndex
     };
     
     setPlacedFields(prev => [...prev, newField]);
@@ -529,21 +532,32 @@ export default function DispatchCenterUI({
 
   // Stamping and Saving locally using PyMuPDF
   const handleLocalStamping = async () => {
-    let sigField = placedFields.find(f => f.type === 'signature');
+    const signaturesPayload = placedFields
+      .filter(f => f.type === 'signature' && f.value)
+      .map(f => ({
+        page_num: f.pageIndex ?? 0,
+        x_pct: f.x / 100,
+        y_pct: f.y / 100,
+        w_pct: f.w / 100,
+        h_pct: f.h / 100,
+        base64: f.value
+      }));
+
+    // Legacy parameters for backward compatibility fallback
     let sigBase64 = signatureImage || '';
     let sigX = -0.5;
     let sigY = -0.5;
     let sigW = 0.001;
     let sigH = 0.001;
 
-    if (sigField && sigField.value) {
-      sigBase64 = sigField.value;
-      sigX = sigField.x / 100;
-      sigY = sigField.y / 100;
-      sigW = sigField.w / 100;
-      sigH = sigField.h / 100;
-    } else {
-      // Bypasses backend schema requirements with a transparent 1x1 pixel PNG out of bounds
+    const firstSig = signaturesPayload[0];
+    if (firstSig) {
+      sigBase64 = firstSig.base64;
+      sigX = firstSig.x_pct;
+      sigY = firstSig.y_pct;
+      sigW = firstSig.w_pct;
+      sigH = firstSig.h_pct;
+    } else if (!signatureImage) {
       sigBase64 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
     }
 
@@ -554,7 +568,9 @@ export default function DispatchCenterUI({
         .map(f => ({
           text: f.value,
           x_pct: f.x / 100,
-          y_pct: f.y / 100
+          y_pct: f.y / 100,
+          page_num: f.pageIndex ?? 0,
+          fontSize: f.fontSize ?? 11
         }));
 
       const payload = {
@@ -564,7 +580,8 @@ export default function DispatchCenterUI({
         sig_w_pct: sigW,
         sig_h_pct: sigH,
         signature_base64: sigBase64,
-        text_fields: textFieldsPayload
+        text_fields: textFieldsPayload,
+        signatures: signaturesPayload
       };
 
       const response = await fetch(`${API_BASE}/api/documents/${docId}/sign-local`, {
