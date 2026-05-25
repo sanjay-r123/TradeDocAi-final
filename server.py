@@ -2540,7 +2540,7 @@ def api_docuseal_webhook():
     import requests
     try:
         payload = request.get_json(silent=True) or {}
-        event = payload.get("event")
+        event = payload.get("event_type") or payload.get("event")
         print(f"  🔔 DocuSeal Webhook received: {event}")
         
         if event == "submission.completed":

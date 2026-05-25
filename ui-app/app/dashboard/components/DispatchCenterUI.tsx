@@ -432,10 +432,12 @@ export default function DispatchCenterUI({
   // Draggable & Resizable Handlers
   const onDragMove = (e: React.MouseEvent) => {
     if (!activeDragId && !activeResizeId) return;
-    const container = e.currentTarget.getBoundingClientRect();
+    const pageEl = document.querySelector('.react-pdf__Page');
+    const container = pageEl ? pageEl.getBoundingClientRect() : e.currentTarget.getBoundingClientRect();
     
     const deltaX = ((e.clientX - dragStart.x) / container.width) * 100;
     const deltaY = ((e.clientY - dragStart.y) / container.height) * 100;
+    
     
     if (activeDragId) {
       setPlacedFields(prev => prev.map(field => {
