@@ -24,6 +24,7 @@ Usage:
 """
 
 import os
+import base64
 import sys
 import json
 import uuid
