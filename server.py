@@ -1135,10 +1135,101 @@ def api_change_password():
         return jsonify({"error": str(e)}), 500
 
 
+def _sync_docuseal_submission(doc, db, collection):
+    """
+    Self-healing status sync: Queries DocuSeal REST API to verify live signing status.
+    If the document has been fully executed, downloads and archives the completed PDF,
+    and transitions the local status to 'signed' automatically.
+    """
+    submission_id = doc.get("docuseal_submission_id")
+    status = doc.get("status")
+    
+    if not submission_id or status != "dispatched":
+        return doc
+        
+    if not DOCUSEAL_API_KEY:
+        print("  ⚠️  DOCUSEAL_API_KEY is not set. Skipping self-healing sync.")
+        return doc
+        
+    import requests
+    try:
+        url = f"https://api.docuseal.co/submissions/{submission_id}"
+        headers = {"X-Auth-Token": DOCUSEAL_API_KEY}
+        res = requests.get(url, headers=headers, timeout=10)
+        
+        if res.status_code == 200:
+            sub_data = res.json()
+            sub_status = sub_data.get("status")
+            print(f"  🔄 DocuSeal Self-Healing Sync: Sub {submission_id} status is '{sub_status}'")
+            
+            if sub_status == "completed" or sub_data.get("completed_at"):
+                documents = sub_data.get("documents", [])
+                if not documents:
+                    return doc
+                    
+                completed_pdf_url = documents[0].get("url")
+                if not completed_pdf_url:
+                    return doc
+                    
+                # Download completed PDF
+                pdf_res = requests.get(completed_pdf_url, headers=headers, timeout=30)
+                if pdf_res.status_code != 200:
+                    return doc
+                    
+                signed_pdf_bytes = pdf_res.content
+                doc_id = str(doc["_id"])
+                user_id = str(doc["user_id"])
+                doc_type = doc["doc_type"]
+                
+                # Archive to GCS
+                gcs_signed_path = None
+                if GCS_AVAILABLE and GCS_BUCKET_NAME:
+                    try:
+                        client = _storage_client()
+                        if client:
+                            bucket = client.bucket(GCS_BUCKET_NAME)
+                            object_path = f"{user_id}/{doc_type}/{doc_id}_signed.pdf"
+                            blob = bucket.blob(object_path)
+                            blob.upload_from_string(signed_pdf_bytes, content_type="application/pdf")
+                            gcs_signed_path = object_path
+                            print(f"  ☁️  [Sync] Signed PDF saved to GCS: gs://{GCS_BUCKET_NAME}/{object_path}")
+                    except Exception as e:
+                        print(f"  ⚠️  [Sync] Error saving signed PDF to GCS: {e}")
+                        
+                # Save locally
+                local_signed_dir = os.path.join(TEMP_PDF_DIR, user_id, "signed")
+                os.makedirs(local_signed_dir, exist_ok=True)
+                local_signed_path = os.path.join(local_signed_dir, f"{doc_id}_signed.pdf")
+                with open(local_signed_path, "wb") as f:
+                    f.write(signed_pdf_bytes)
+                    
+                now = datetime.now(timezone.utc).isoformat()
+                update_fields = {
+                    "status": "signed",
+                    "signed_pdf_url": f"/api/documents/{doc_id}/pdf?type=signed",
+                    "updated_at": now
+                }
+                if gcs_signed_path:
+                    update_fields["gcs_signed_path"] = gcs_signed_path
+                    
+                collection.update_one({"_id": doc["_id"]}, {"$set": update_fields})
+                print(f"  ✅ [Sync] Document {doc_id} successfully transitioned to 'signed' status via self-healing!")
+                
+                # Return refreshed document to caller
+                updated_doc = collection.find_one({"_id": doc["_id"]})
+                if updated_doc:
+                    updated_doc["is_draft"] = doc.get("is_draft", False)
+                    return updated_doc
+    except Exception as e:
+        print(f"  ⚠️  [Sync] Error during self-healing sync for doc {doc.get('_id')}: {e}")
+        
+    return doc
+
+
 @app.route("/api/documents", methods=["GET"])
 @require_auth
 def api_list_documents():
-    """List all documents (Final) and drafts for the user."""
+    """List all documents (Final) and drafts for the user, with on-demand self-healing status sync."""
     try:
         db = get_db()
         # Fetch from both collections
@@ -1148,6 +1239,15 @@ def api_list_documents():
         # Mark them so frontend knows which is which
         for d in final_docs: d["is_draft"] = False
         for d in drafts: d["is_draft"] = True
+        
+        # Self-healing sync for active dispatched files
+        for i, d in enumerate(final_docs):
+            if d.get("status") == "dispatched" and d.get("docuseal_submission_id"):
+                final_docs[i] = _sync_docuseal_submission(d, db, db.documents)
+                
+        for i, d in enumerate(drafts):
+            if d.get("status") == "dispatched" and d.get("docuseal_submission_id"):
+                drafts[i] = _sync_docuseal_submission(d, db, db.drafts)
         
         all_docs = final_docs + drafts
         # Sort combined list by updated_at
@@ -1234,7 +1334,7 @@ def api_save_document():
 @app.route("/api/documents/<doc_id>", methods=["GET"])
 @require_auth
 def api_get_document(doc_id):
-    """Return a single document from either drafts or documents collection."""
+    """Return a single document from either drafts or documents collection, with self-healing status sync."""
     try:
         db = get_db()
         oid = ObjectId(doc_id)
@@ -1249,6 +1349,12 @@ def api_get_document(doc_id):
                 
         if not doc:
             return jsonify({"error": "Document not found"}), 404
+            
+        # Self-healing sync for active dispatched files
+        if doc.get("status") == "dispatched" and doc.get("docuseal_submission_id"):
+            collection = db.documents if not doc["is_draft"] else db.drafts
+            doc = _sync_docuseal_submission(doc, db, collection)
+            
         return jsonify(_obj_id_to_str(doc))
     except Exception as e:
         if isinstance(e, InvalidId):

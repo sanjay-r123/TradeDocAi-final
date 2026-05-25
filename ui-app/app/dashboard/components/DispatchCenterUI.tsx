@@ -4,6 +4,14 @@ import React, { useState, useEffect, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import { Schema } from '../types';
 import { authHeaders, API_BASE } from '../../../lib/api';
+import { Document, Page, pdfjs } from 'react-pdf';
+import 'react-pdf/dist/Page/AnnotationLayer.css';
+import 'react-pdf/dist/Page/TextLayer.css';
+
+// Set worker for react-pdf
+if (typeof window !== 'undefined') {
+  pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version || '4.4.0'}/build/pdf.worker.min.mjs`;
+}
 
 const CustomPDFViewer = dynamic(() => import('./CustomPDFViewer'), {
   ssr: false,
@@ -890,7 +898,7 @@ export default function DispatchCenterUI({
               onMouseMove={onDragMove}
               onMouseUp={endDrag}
               onMouseLeave={endDrag}
-              className="flex-1 w-full h-[650px] sm:h-[750px] lg:h-[800px] bg-slate-50 border border-slate-100 rounded-3xl relative shadow-inner overflow-hidden select-none animate-fade-in"
+              className="flex-1 w-full h-[650px] sm:h-[750px] lg:h-[800px] bg-slate-100 border border-slate-200 rounded-3xl relative shadow-inner overflow-auto select-none animate-fade-in flex flex-col items-center p-8 pt-20 custom-scrollbar"
             >
               {/* Floating Acrobat Toolbar */}
               <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-slate-900/95 backdrop-blur-md px-5 py-2.5 rounded-full border border-slate-800 text-white flex items-center gap-5 shadow-xl z-20 select-none animate-fade-in">
@@ -942,38 +950,47 @@ export default function DispatchCenterUI({
                 )}
               </div>
 
-              {/* PDF Previewer with Click-to-Place Overlay */}
+              {/* Centered Document Wrapper matching standard page boundaries */}
               <div 
-                onClick={(e) => {
-                  if (!selectedTool) return;
-                  const container = e.currentTarget.getBoundingClientRect();
-                  const px = ((e.clientX - container.left) / container.width) * 100;
-                  const py = ((e.clientY - container.top) / container.height) * 100;
-                  addFieldAtPosition(selectedTool, px, py);
-                }}
                 style={{
-                  cursor: selectedTool ? 'crosshair' : 'default'
+                  width: '600px', // Exact rendered PDF width
+                  position: 'relative'
                 }}
-                className="w-full h-full relative"
+                className="shadow-[0_20px_50px_rgba(0,0,0,0.15)] rounded-sm overflow-hidden bg-white shrink-0"
               >
-                <div className="w-full h-full pointer-events-none">
-                  <CustomPDFViewer
-                    pdfUrl={pdfUrl}
-                    filename={pdfFilename || 'Confirmation'}
-                    onClose={onClose}
-                    onDownload={() => {}}
-                    onPrint={() => {}}
-                    isAiCreated={false}
-                    hasExistingReport={false}
-                    hideSidebar={true}
-                    hideToolbar={true}
+                <Document
+                  file={pdfUrl}
+                  loading={
+                    <div className="w-[600px] h-[800px] bg-white animate-pulse flex flex-col items-center justify-center gap-3">
+                      <div className="w-8 h-8 border-4 border-slate-200 border-t-indigo-500 rounded-full animate-spin" />
+                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Loading PDF Page...</p>
+                    </div>
+                  }
+                >
+                  <Page
+                    pageNumber={1}
+                    width={600}
+                    renderTextLayer={false}
+                    renderAnnotationLayer={false}
                   />
-                </div>
+                </Document>
 
                 {/* Click-to-Place Pointer Event Overlay */}
-                <div className="absolute inset-0 bg-transparent" />
+                <div 
+                  onClick={(e) => {
+                    if (!selectedTool) return;
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const px = ((e.clientX - rect.left) / rect.width) * 100;
+                    const py = ((e.clientY - rect.top) / rect.height) * 100;
+                    addFieldAtPosition(selectedTool, px, py);
+                  }}
+                  style={{
+                    cursor: selectedTool ? 'crosshair' : 'default'
+                  }}
+                  className="absolute inset-0 z-10"
+                />
 
-                {/* Dynamic Drag-and-Drop / Resizable Fields */}
+                {/* Dynamic Drag-and-Drop / Resizable Fields inside the exact container */}
                 {placedFields.map((field) => {
                   const isSelected = selectedFieldId === field.id;
                   const isSig = field.type === 'signature';
