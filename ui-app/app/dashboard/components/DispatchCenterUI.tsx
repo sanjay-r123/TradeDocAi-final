@@ -23,7 +23,10 @@ interface PlacedField {
   label: string;
   x: number;
   y: number;
+  w: number;
+  h: number;
   value: string;
+  fontSize?: number;
 }
 
 interface DispatchCenterUIProps {
@@ -59,14 +62,22 @@ export default function DispatchCenterUI({
   
   // Acrobat / DocuSeal Dynamic Fields State
   const [placedFields, setPlacedFields] = useState<PlacedField[]>([
-    { id: 'sig', type: 'signature', label: 'Signature', x: 25, y: 78, value: '' },
-    { id: 'name', type: 'name', label: 'Signatory Name', x: 45, y: 76, value: 'Sanjay R' },
-    { id: 'title', type: 'title', label: 'Corporate Title', x: 45, y: 81, value: 'Managing Director' },
-    { id: 'date', type: 'date', label: 'Signing Date', x: 45, y: 86, value: new Date().toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' }) }
+    { id: 'sig', type: 'signature', label: 'Signature', x: 25, y: 78, w: 16, h: 8, value: '' },
+    { id: 'name', type: 'name', label: 'Signatory Name', x: 45, y: 76, w: 22, h: 5, value: 'Sanjay R' },
+    { id: 'title', type: 'title', label: 'Corporate Title', x: 45, y: 81, w: 22, h: 5, value: 'Managing Director' },
+    { id: 'date', type: 'date', label: 'Signing Date', x: 45, y: 86, w: 22, h: 5, value: new Date().toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' }) }
   ]);
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
   const [selectedFieldId, setSelectedFieldId] = useState<string | null>(null);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+
+  // Acrobat Tools State
+  const [selectedTool, setSelectedTool] = useState<'text' | 'signature' | 'date' | null>(null);
+  const [activeResizeId, setActiveResizeId] = useState<string | null>(null);
+  const [resizeHandle, setResizeHandle] = useState<'tl' | 'tr' | 'bl' | 'br' | null>(null);
+  const [showSigModal, setShowSigModal] = useState(false);
+  const [sigModalTab, setSigModalTab] = useState<'draw' | 'upload'>('draw');
+  const [pendingSigCoords, setPendingSigCoords] = useState<{ x: number, y: number } | null>(null);
 
   // DocuSeal states
   const [builderToken, setBuilderToken] = useState<string | null>(null);
@@ -201,21 +212,127 @@ export default function DispatchCenterUI({
     const canvas = canvasRef.current;
     if (!canvas) return;
     const dataUrl = canvas.toDataURL('image/png');
-    setSignatureImage(dataUrl);
-    setPlacedFields(prev => prev.map(f => f.type === 'signature' ? { ...f, value: dataUrl } : f));
-    onShowToast('📋 Signature captured! Position your signature stamp on the document.');
+    saveSignatureData(dataUrl);
+    onShowToast('📋 Signature captured successfully!');
   };
 
-  // Dynamic Fields Helpers
-  const addField = (type: 'signature' | 'name' | 'title' | 'date' | 'text') => {
+  const saveSignatureData = (dataUrl: string) => {
+    setSignatureImage(dataUrl);
+    // Apply signature to signature fields in layout
+    setPlacedFields(prev => prev.map(f => f.type === 'signature' ? { ...f, value: dataUrl } : f));
+    
+    // If we had a click waiting for signature, place it now
+    if (pendingSigCoords) {
+      placeSignatureAtCoords(dataUrl, pendingSigCoords.x, pendingSigCoords.y);
+      setPendingSigCoords(null);
+    }
+  };
+
+  const placeSignatureAtCoords = (dataUrl: string, px: number, py: number) => {
+    const id = `sig_${Date.now()}`;
+    const width = 16;
+    const height = 8;
+    const newField: PlacedField = {
+      id,
+      type: 'signature',
+      label: 'Signature',
+      x: Math.max(0, Math.min(100 - width, px - width / 2)),
+      y: Math.max(0, Math.min(100 - height, py - height / 2)),
+      w: width,
+      h: height,
+      value: dataUrl
+    };
+    setPlacedFields(prev => [...prev.filter(f => f.type !== 'signature' || f.value !== ''), newField]);
+    setSelectedFieldId(id);
+    onShowToast('✍️ Signature stamped on the document!');
+  };
+
+  const handleSignatureUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const result = event.target?.result as string;
+      saveSignatureData(result);
+      setShowSigModal(false);
+      onShowToast('📥 Signature image uploaded successfully!');
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // Acrobat Click-to-Place Tool Spawner
+  const addFieldAtPosition = (type: 'signature' | 'text' | 'date', px: number, py: number) => {
     const id = `${type}_${Date.now()}`;
     let label = '';
     let defaultValue = '';
+    let width = 22;
+    let height = 5;
     
     switch (type) {
       case 'signature':
         label = 'Signature';
         defaultValue = signatureImage || '';
+        width = 16;
+        height = 8;
+        if (!signatureImage) {
+          setShowSigModal(true);
+          setPendingSigCoords({ x: px, y: py });
+          setSelectedTool(null);
+          return;
+        }
+        break;
+      case 'date':
+        label = 'Signing Date';
+        defaultValue = stampedDate;
+        width = 22;
+        height = 4.5;
+        break;
+      case 'text':
+        label = 'Custom Text';
+        defaultValue = 'Enter text here';
+        width = 22;
+        height = 4.5;
+        break;
+    }
+    
+    const newField: PlacedField = {
+      id,
+      type: type === 'text' ? 'text' : (type === 'date' ? 'date' : 'signature'),
+      label,
+      x: Math.max(0, Math.min(100 - width, px - width / 2)),
+      y: Math.max(0, Math.min(100 - height, py - height / 2)),
+      w: width,
+      h: height,
+      value: defaultValue,
+      fontSize: 11
+    };
+    
+    setPlacedFields(prev => [...prev, newField]);
+    setSelectedFieldId(id);
+    setSelectedTool(null); // Reset active tool (Acrobat default)
+    onShowToast(`➕ Placed ${label}! Drag corners to resize.`);
+  };
+
+  // Traditional Sidebar Spawner (Acrobat Toolbar Fallback)
+  const addField = (type: 'signature' | 'name' | 'title' | 'date' | 'text') => {
+    const id = `${type}_${Date.now()}`;
+    let label = '';
+    let defaultValue = '';
+    let width = 22;
+    let height = 5;
+    
+    switch (type) {
+      case 'signature':
+        label = 'Signature';
+        defaultValue = signatureImage || '';
+        width = 16;
+        height = 8;
+        if (!signatureImage) {
+          setShowSigModal(true);
+          setSelectedTool(null);
+          return;
+        }
         break;
       case 'name':
         label = 'Signatory Name';
@@ -235,14 +352,16 @@ export default function DispatchCenterUI({
         break;
     }
     
-    // Spawn at a neat staggered coordinate
     const newField: PlacedField = {
       id,
       type,
       label,
       x: 35 + (placedFields.length * 4) % 25,
       y: 40 + (placedFields.length * 5) % 25,
-      value: defaultValue
+      w: width,
+      h: height,
+      value: defaultValue,
+      fontSize: 11
     };
     
     setPlacedFields(prev => [...prev, newField]);
@@ -253,7 +372,6 @@ export default function DispatchCenterUI({
   const updateSelectedFieldValue = (val: string) => {
     if (!selectedFieldId) return;
     setPlacedFields(prev => prev.map(f => f.id === selectedFieldId ? { ...f, value: val } : f));
-    // Keep local states in sync if editing core banker fields
     const field = placedFields.find(f => f.id === selectedFieldId);
     if (field) {
       if (field.type === 'name') setBankerName(val);
@@ -261,46 +379,112 @@ export default function DispatchCenterUI({
     }
   };
 
-  // Draggable Event Handlers
+  // Draggable & Resizable Handlers
   const onDragMove = (e: React.MouseEvent) => {
-    if (!activeDragId) return;
+    if (!activeDragId && !activeResizeId) return;
     const container = e.currentTarget.getBoundingClientRect();
     
     const deltaX = ((e.clientX - dragStart.x) / container.width) * 100;
     const deltaY = ((e.clientY - dragStart.y) / container.height) * 100;
     
-    setPlacedFields(prev => prev.map(field => {
-      if (field.id === activeDragId) {
-        const widthOffset = field.type === 'signature' ? 16 : 22;
-        const heightOffset = field.type === 'signature' ? 8 : 6;
-        return {
-          ...field,
-          x: Math.max(0, Math.min(100 - widthOffset, field.x + deltaX)),
-          y: Math.max(0, Math.min(100 - heightOffset, field.y + deltaY))
-        };
-      }
-      return field;
-    }));
-    
-    setDragStart({ x: e.clientX, y: e.clientY });
+    if (activeDragId) {
+      setPlacedFields(prev => prev.map(field => {
+        if (field.id === activeDragId) {
+          return {
+            ...field,
+            x: Math.max(0, Math.min(100 - field.w, field.x + deltaX)),
+            y: Math.max(0, Math.min(100 - field.h, field.y + deltaY))
+          };
+        }
+        return field;
+      }));
+      setDragStart({ x: e.clientX, y: e.clientY });
+    } else if (activeResizeId && resizeHandle) {
+      setPlacedFields(prev => prev.map(field => {
+        if (field.id === activeResizeId) {
+          let newW = field.w;
+          let newH = field.h;
+          let newX = field.x;
+          let newY = field.y;
+
+          if (resizeHandle === 'br') {
+            newW = Math.max(4, Math.min(100 - field.x, field.w + deltaX));
+            newH = Math.max(2, Math.min(100 - field.y, field.h + deltaY));
+          } else if (resizeHandle === 'bl') {
+            const possibleW = field.w - deltaX;
+            if (possibleW >= 4) {
+              newX = Math.max(0, field.x + deltaX);
+              newW = possibleW;
+            }
+            newH = Math.max(2, Math.min(100 - field.y, field.h + deltaY));
+          } else if (resizeHandle === 'tr') {
+            newW = Math.max(4, Math.min(100 - field.x, field.w + deltaX));
+            const possibleH = field.h - deltaY;
+            if (possibleH >= 2) {
+              newY = Math.max(0, field.y + deltaY);
+              newH = possibleH;
+            }
+          } else if (resizeHandle === 'tl') {
+            const possibleW = field.w - deltaX;
+            if (possibleW >= 4) {
+              newX = Math.max(0, field.x + deltaX);
+              newW = possibleW;
+            }
+            const possibleH = field.h - deltaY;
+            if (possibleH >= 2) {
+              newY = Math.max(0, field.y + deltaY);
+              newH = possibleH;
+            }
+          }
+
+          // Lock aspect ratio for signature stamps (e.g. 2:1 ratio)
+          if (field.type === 'signature') {
+            newH = newW / 2;
+          }
+
+          return {
+            ...field,
+            x: newX,
+            y: newY,
+            w: newW,
+            h: newH
+          };
+        }
+        return field;
+      }));
+      setDragStart({ x: e.clientX, y: e.clientY });
+    }
   };
 
   const startDrag = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
+    // Only drag if not clicking floating controls or corner handles
+    if (activeResizeId) return;
     setActiveDragId(id);
+    setSelectedFieldId(id);
+    setDragStart({ x: e.clientX, y: e.clientY });
+  };
+
+  const startResize = (e: React.MouseEvent, id: string, handle: 'tl' | 'tr' | 'bl' | 'br') => {
+    e.stopPropagation();
+    e.preventDefault();
+    setActiveResizeId(id);
+    setResizeHandle(handle);
     setSelectedFieldId(id);
     setDragStart({ x: e.clientX, y: e.clientY });
   };
 
   const endDrag = () => {
     setActiveDragId(null);
+    setActiveResizeId(null);
+    setResizeHandle(null);
   };
 
   // Stamping and Saving locally using PyMuPDF
   const handleLocalStamping = async () => {
     const sigField = placedFields.find(f => f.type === 'signature');
     if (!sigField || !sigField.value) {
-      onShowToast('⚠️ Please draw and capture your signature first');
+      onShowToast('⚠️ Please upload or draw your signature stamp first');
       return;
     }
 
@@ -318,8 +502,8 @@ export default function DispatchCenterUI({
         page_num: 0,
         sig_x_pct: sigField.x / 100,
         sig_y_pct: sigField.y / 100,
-        sig_w_pct: 0.16, // Fixed relative stamp width
-        sig_h_pct: 0.08, // Fixed relative stamp height
+        sig_w_pct: sigField.w / 100,
+        sig_h_pct: sigField.h / 100,
         signature_base64: sigField.value,
         text_fields: textFieldsPayload
       };
@@ -649,129 +833,244 @@ export default function DispatchCenterUI({
           </div>
         )}
 
-        {/* ==================== STEP 2: BANKER LOCAL SIGNING (DRAG-AND-DROP CANVAS) ==================== */}
+        {/* ==================== STEP 2: BANKER LOCAL SIGNING (ACROBAT CLICK-TO-PLACE EDITOR) ==================== */}
         {activeStep === 'self_sign' && !isFx && (
           <div className="flex-1 flex flex-col xl:flex-row gap-6 min-h-0 items-stretch animate-fade-in">
-            {/* Left Panel: Draggable Overlay PDF Viewer */}
+            {/* Left Panel: Acrobat Placement Canvas & PDF Viewer */}
             <div 
               onMouseMove={onDragMove}
               onMouseUp={endDrag}
               onMouseLeave={endDrag}
-              onClick={() => setSelectedFieldId(null)}
               className="flex-1 w-full h-[650px] sm:h-[750px] lg:h-[800px] bg-slate-50 border border-slate-100 rounded-3xl relative shadow-inner overflow-hidden select-none animate-fade-in"
             >
-              {/* PDF Previewer */}
-              <div className="w-full h-full pointer-events-none">
-                <CustomPDFViewer
-                  pdfUrl={pdfUrl}
-                  filename={pdfFilename || 'Confirmation'}
-                  onClose={onClose}
-                  onDownload={() => {}}
-                  onPrint={() => {}}
-                  isAiCreated={false}
-                  hasExistingReport={false}
-                  hideSidebar={true}
-                  hideToolbar={true}
-                />
-              </div>
-
-              {/* Guide Overlay Banner */}
-              <div className="absolute top-4 left-4 right-4 bg-slate-900/90 backdrop-blur-sm px-5 py-3 rounded-2xl border border-slate-800 text-white flex items-center justify-between shadow-lg z-20">
-                <div className="flex items-center gap-2">
-                  <span className="text-lg">🎯</span>
-                  <span className="text-xs font-semibold leading-none">
-                    Drag and place e-sign boxes anywhere on the PDF! Click a box to edit its value on the right.
-                  </span>
-                </div>
-              </div>
-
-              {/* Dynamic Drag-and-Drop Fields */}
-              {placedFields.map((field) => {
-                const isSelected = selectedFieldId === field.id;
-                const isSig = field.type === 'signature';
-                
-                return (
-                  <div
-                    key={field.id}
-                    onMouseDown={(e) => startDrag(e, field.id)}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setSelectedFieldId(field.id);
+              {/* Floating Acrobat Toolbar */}
+              <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-slate-900/95 backdrop-blur-md px-5 py-2.5 rounded-full border border-slate-800 text-white flex items-center gap-5 shadow-xl z-20 select-none animate-fade-in">
+                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none border-r border-slate-700 pr-4">
+                  ✍️ E-Sign Tools
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedTool(selectedTool === 'text' ? null : 'text');
+                      setSelectedFieldId(null);
                     }}
-                    style={{
-                      position: 'absolute',
-                      left: `${field.x}%`,
-                      top: `${field.y}%`,
-                      cursor: activeDragId === field.id ? 'grabbing' : 'grab',
-                      border: isSelected 
-                        ? `2px solid ${isSig ? '#f59e0b' : '#6366f1'}` 
-                        : `1.5px dashed ${isSig ? '#d97706' : '#818cf8'}`,
-                      padding: isSig ? '4px' : '6px 10px',
-                      borderRadius: '10px',
-                      backgroundColor: isSig 
-                        ? 'rgba(254, 243, 199, 0.88)' // warm transparent amber
-                        : 'rgba(238, 242, 255, 0.88)', // premium transparent indigo
-                      backdropFilter: 'blur(4px)',
-                      zIndex: isSelected ? 40 : 30,
-                      width: isSig ? '160px' : '200px',
-                      minHeight: isSig ? '70px' : 'auto',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      transition: activeDragId === field.id ? 'none' : 'box-shadow 0.2s, border-color 0.2s'
-                    }}
-                    className={`shadow-md hover:shadow-lg select-none group ${isSelected ? 'ring-2 ring-indigo-500/20' : ''}`}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                      selectedTool === 'text' ? 'bg-indigo-600 text-white shadow-md' : 'hover:bg-slate-800 text-slate-300'
+                    }`}
                   >
-                    {isSig ? (
-                      field.value ? (
-                        <img 
-                          src={field.value} 
-                          alt="Signature Stamp" 
-                          className="max-w-full max-h-[56px] object-contain pointer-events-none mx-auto" 
-                        />
-                      ) : (
-                        <div className="flex flex-col items-center justify-center py-2 text-slate-400 gap-1">
-                          <svg className="w-5 h-5 text-amber-500" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                          </svg>
-                          <span className="text-[9px] font-black text-amber-600/80 uppercase tracking-wide">Draw Signature</span>
-                        </div>
-                      )
-                    ) : (
-                      <div className="flex flex-col gap-0.5">
-                        <span className="text-[7.5px] font-black text-slate-400 uppercase tracking-widest leading-none">
-                          {field.label}
-                        </span>
-                        <span className="text-[11px] font-bold text-slate-900 font-mono break-words leading-tight mt-0.5">
-                          {field.value || <em className="text-slate-300 font-normal">No text configured</em>}
-                        </span>
-                      </div>
-                    )}
-                    
-                    {/* Role / Pill Badge */}
-                    <span className={`text-[7px] text-white font-extrabold px-1.5 py-0.5 rounded absolute -top-2.5 right-2 uppercase tracking-wider scale-90 ${
-                      isSig ? 'bg-amber-500' : 'bg-indigo-600'
-                    }`}>
-                      {field.label}
-                    </span>
+                    <span>A</span> Insert Text
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedTool(selectedTool === 'signature' ? null : 'signature');
+                      setSelectedFieldId(null);
+                    }}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                      selectedTool === 'signature' ? 'bg-amber-500 text-white shadow-md' : 'hover:bg-slate-800 text-slate-300'
+                    }`}
+                  >
+                    <span>✍️</span> Stamp Signature
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedTool(selectedTool === 'date' ? null : 'date');
+                      setSelectedFieldId(null);
+                    }}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                      selectedTool === 'date' ? 'bg-sky-500 text-white shadow-md' : 'hover:bg-slate-800 text-slate-300'
+                    }`}
+                  >
+                    <span>📅</span> Today's Date
+                  </button>
+                </div>
+                {selectedTool && (
+                  <span className="text-[9px] font-extrabold text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20 animate-pulse uppercase tracking-wider">
+                    Click document to place
+                  </span>
+                )}
+              </div>
 
-                    {/* Delete button */}
-                    <button
+              {/* PDF Previewer with Click-to-Place Overlay */}
+              <div 
+                onClick={(e) => {
+                  if (!selectedTool) return;
+                  const container = e.currentTarget.getBoundingClientRect();
+                  const px = ((e.clientX - container.left) / container.width) * 100;
+                  const py = ((e.clientY - container.top) / container.height) * 100;
+                  addFieldAtPosition(selectedTool, px, py);
+                }}
+                style={{
+                  cursor: selectedTool ? 'crosshair' : 'default'
+                }}
+                className="w-full h-full relative"
+              >
+                <div className="w-full h-full pointer-events-none">
+                  <CustomPDFViewer
+                    pdfUrl={pdfUrl}
+                    filename={pdfFilename || 'Confirmation'}
+                    onClose={onClose}
+                    onDownload={() => {}}
+                    onPrint={() => {}}
+                    isAiCreated={false}
+                    hasExistingReport={false}
+                    hideSidebar={true}
+                    hideToolbar={true}
+                  />
+                </div>
+
+                {/* Click-to-Place Pointer Event Overlay */}
+                <div className="absolute inset-0 bg-transparent" />
+
+                {/* Dynamic Drag-and-Drop / Resizable Fields */}
+                {placedFields.map((field) => {
+                  const isSelected = selectedFieldId === field.id;
+                  const isSig = field.type === 'signature';
+                  
+                  return (
+                    <div
+                      key={field.id}
+                      onMouseDown={(e) => startDrag(e, field.id)}
                       onClick={(e) => {
                         e.stopPropagation();
-                        setPlacedFields(prev => prev.filter(f => f.id !== field.id));
-                        if (selectedFieldId === field.id) setSelectedFieldId(null);
+                        setSelectedFieldId(field.id);
                       }}
-                      className="absolute -top-2 -left-2 w-5 h-5 rounded-full bg-rose-500 text-white flex items-center justify-center text-[10px] font-black opacity-0 group-hover:opacity-100 transition-opacity shadow-md hover:bg-rose-600 cursor-pointer"
-                      title="Delete Field"
+                      style={{
+                        position: 'absolute',
+                        left: `${field.x}%`,
+                        top: `${field.y}%`,
+                        width: `${field.w}%`,
+                        height: `${field.h}%`,
+                        cursor: activeDragId === field.id ? 'grabbing' : 'grab',
+                        border: isSelected 
+                          ? `1.5px solid ${isSig ? '#f59e0b' : '#6366f1'}` 
+                          : `1px dashed ${isSig ? '#d97706' : '#818cf8'}`,
+                        padding: isSig ? '4px' : '4px 6px',
+                        borderRadius: '6px',
+                        backgroundColor: isSig 
+                          ? 'rgba(254, 243, 199, 0.88)' // warm transparent amber
+                          : 'rgba(238, 242, 255, 0.88)', // premium transparent indigo
+                        backdropFilter: 'blur(3px)',
+                        zIndex: isSelected ? 40 : 30,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        justifyContent: 'center',
+                        transition: activeDragId === field.id || activeResizeId === field.id ? 'none' : 'box-shadow 0.2s, border-color 0.2s'
+                      }}
+                      className={`shadow-sm hover:shadow-md select-none group ${isSelected ? 'ring-2 ring-indigo-500/10' : ''}`}
                     >
-                      ×
-                    </button>
-                  </div>
-                );
-              })}
+                      {/* Floating Micro-Controls Toolbar */}
+                      {isSelected && (
+                        <div 
+                          onMouseDown={(e) => e.stopPropagation()}
+                          className="absolute -top-9 left-1/2 -translate-x-1/2 bg-slate-900 text-white rounded-lg shadow-lg px-2.5 py-1 flex items-center gap-1.5 z-50 text-[10px] font-black border border-slate-700/50 select-none animate-fade-in shrink-0"
+                        >
+                          {!isSig && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setPlacedFields(prev => prev.map(f => f.id === field.id ? { ...f, fontSize: Math.max(8, (f.fontSize || 11) - 1) } : f));
+                                }}
+                                className="px-1.5 py-0.5 hover:bg-slate-800 rounded text-slate-300 font-inter cursor-pointer"
+                                title="Decrease Font"
+                              >
+                                A-
+                              </button>
+                              <span className="text-slate-600">|</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setPlacedFields(prev => prev.map(f => f.id === field.id ? { ...f, fontSize: Math.min(24, (f.fontSize || 11) + 1) } : f));
+                                }}
+                                className="px-1.5 py-0.5 hover:bg-slate-800 rounded text-slate-300 font-inter cursor-pointer"
+                                title="Increase Font"
+                              >
+                                A+
+                              </button>
+                              <span className="text-slate-600">|</span>
+                            </>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPlacedFields(prev => prev.filter(f => f.id !== field.id));
+                              if (selectedFieldId === field.id) setSelectedFieldId(null);
+                            }}
+                            className="px-1.5 py-0.5 hover:bg-rose-950 text-rose-400 rounded font-inter cursor-pointer flex items-center gap-1"
+                            title="Delete Stamp"
+                          >
+                            🗑️ Delete
+                          </button>
+                        </div>
+                      )}
+
+                      {/* Corner Resize Handles */}
+                      {isSelected && (
+                        <>
+                          <div 
+                            onMouseDown={(e) => startResize(e, field.id, 'tl')}
+                            className="w-2.5 h-2.5 bg-white border-2 border-indigo-500 rounded-full absolute -top-1.25 -left-1.25 cursor-nwse-resize z-50 hover:scale-125 transition-transform" 
+                          />
+                          <div 
+                            onMouseDown={(e) => startResize(e, field.id, 'tr')}
+                            className="w-2.5 h-2.5 bg-white border-2 border-indigo-500 rounded-full absolute -top-1.25 -right-1.25 cursor-nesw-resize z-50 hover:scale-125 transition-transform" 
+                          />
+                          <div 
+                            onMouseDown={(e) => startResize(e, field.id, 'bl')}
+                            className="w-2.5 h-2.5 bg-white border-2 border-indigo-500 rounded-full absolute -bottom-1.25 -left-1.25 cursor-nesw-resize z-50 hover:scale-125 transition-transform" 
+                          />
+                          <div 
+                            onMouseDown={(e) => startResize(e, field.id, 'br')}
+                            className="w-2.5 h-2.5 bg-white border-2 border-indigo-500 rounded-full absolute -bottom-1.25 -right-1.25 cursor-nwse-resize z-50 hover:scale-125 transition-transform" 
+                          />
+                        </>
+                      )}
+
+                      {isSig ? (
+                        field.value ? (
+                          <img 
+                            src={field.value} 
+                            alt="Signature Stamp" 
+                            className="max-w-full max-h-full object-contain pointer-events-none mx-auto" 
+                          />
+                        ) : (
+                          <div className="flex flex-col items-center justify-center py-1 text-slate-400 gap-1 w-full h-full">
+                            <svg className="w-4 h-4 text-amber-500" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                            </svg>
+                            <span className="text-[7.5px] font-black text-amber-600/80 uppercase tracking-wide leading-none">Setup Signature</span>
+                          </div>
+                        )
+                      ) : (
+                        <div className="flex flex-col justify-center h-full gap-0.5">
+                          <span className="text-[7.5px] font-black text-slate-400 uppercase tracking-widest leading-none">
+                            {field.label}
+                          </span>
+                          <span 
+                            style={{ fontSize: `${field.fontSize || 11}px` }}
+                            className="font-bold text-slate-900 font-mono break-words leading-tight"
+                          >
+                            {field.value || <em className="text-slate-300 font-normal">Double-click or edit value</em>}
+                          </span>
+                        </div>
+                      )}
+                      
+                      {/* Top Label Badge */}
+                      <span className={`text-[6.5px] text-white font-extrabold px-1 py-0.25 rounded absolute -top-2 right-2 uppercase tracking-wider scale-90 ${
+                        isSig ? 'bg-amber-500 shadow-sm' : 'bg-indigo-600 shadow-sm'
+                      }`}>
+                        {field.label}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
 
-            {/* Right Panel: Banker Drawing Pad & Acrobat Style Toolbox */}
+            {/* Right Panel: Side Panel controls & Properties Editor */}
             <div className="w-full xl:w-[460px] bg-white border border-slate-100 rounded-3xl shadow-xl flex flex-col p-6 sm:p-8 min-w-0 shrink-0 gap-5 overflow-y-auto">
               <div className="flex flex-col gap-1">
                 <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-full uppercase tracking-wider w-fit">
@@ -783,87 +1082,15 @@ export default function DispatchCenterUI({
                 </p>
               </div>
 
-              {/* 1. Acrobat Toolbox */}
-              <div className="border border-slate-100 bg-slate-50/50 p-4.5 rounded-2xl flex flex-col gap-3">
-                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none">
-                  🛠️ Drag & Drop Fields Toolbox
-                </span>
-                <div className="grid grid-cols-2 gap-2 mt-1">
-                  <button
-                    onClick={() => addField('text')}
-                    className="py-2.5 px-3 bg-white hover:bg-indigo-50 text-indigo-600 border border-slate-200/80 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-sm hover:border-indigo-200"
-                  >
-                    📝 + Custom Text
-                  </button>
-                  <button
-                    onClick={() => addField('signature')}
-                    className="py-2.5 px-3 bg-white hover:bg-amber-50 text-amber-600 border border-slate-200/80 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-sm hover:border-amber-200"
-                  >
-                    ✍️ + Signature Pad
-                  </button>
-                  <button
-                    onClick={() => addField('name')}
-                    className="py-2.5 px-3 bg-white hover:bg-indigo-50 text-indigo-600 border border-slate-200/80 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-sm hover:border-indigo-200"
-                  >
-                    👤 + Banker Name
-                  </button>
-                  <button
-                    onClick={() => addField('title')}
-                    className="py-2.5 px-3 bg-white hover:bg-indigo-50 text-indigo-600 border border-slate-200/80 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-sm hover:border-indigo-200"
-                  >
-                    💼 + Corp Title
-                  </button>
-                  <button
-                    onClick={() => addField('date')}
-                    className="py-2.5 px-3 bg-white hover:bg-indigo-50 text-indigo-600 border border-slate-200/80 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer col-span-2 shadow-sm hover:border-indigo-200"
-                  >
-                    📅 + Todays Date stamp
-                  </button>
-                </div>
-              </div>
-
-              {/* 2. Signature Drawing Canvas Card */}
-              <div className="border border-slate-100 p-4.5 rounded-2xl flex flex-col gap-2">
-                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none">
-                  🖊️ Drawn Ink Signature
-                </span>
-                <div className="w-full h-[140px] bg-slate-50 border-2 border-dashed border-slate-200 rounded-xl overflow-hidden relative shadow-inner mt-1">
-                  <canvas
-                    ref={canvasRef}
-                    onMouseDown={startDrawing}
-                    onMouseMove={draw}
-                    onMouseUp={stopDrawing}
-                    onMouseLeave={stopDrawing}
-                    onTouchStart={startDrawingTouch}
-                    onTouchMove={drawTouch}
-                    onTouchEnd={stopDrawing}
-                    className="w-full h-full cursor-crosshair bg-white"
-                  />
-                  <button
-                    onClick={clearCanvas}
-                    type="button"
-                    className="absolute bottom-2.5 right-2.5 px-2.5 py-1.5 bg-slate-900/80 hover:bg-slate-900 text-white text-[9px] font-bold rounded-lg transition-all cursor-pointer"
-                  >
-                    Clear Pad
-                  </button>
-                </div>
-                <button
-                  onClick={acceptSignature}
-                  type="button"
-                  className="w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-all cursor-pointer mt-1"
-                >
-                  Capture & Update Signature Stamp
-                </button>
-              </div>
-
-              {/* 3. Selected Field Properties Editor */}
+              {/* Direct Field Properties Editor */}
               {selectedField ? (
-                <div className="border border-indigo-100 bg-indigo-50/20 p-4.5 rounded-2xl flex flex-col gap-3 animate-fade-in">
+                <div className="border border-indigo-100 bg-indigo-50/25 p-4.5 rounded-2xl flex flex-col gap-3.5 animate-fade-in shadow-sm">
                   <div className="flex items-center justify-between">
                     <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded uppercase tracking-wider scale-95 leading-none">
-                      Selected: {selectedField.label}
+                      Active: {selectedField.label}
                     </span>
                     <button
+                      type="button"
                       onClick={() => {
                         setPlacedFields(prev => prev.filter(f => f.id !== selectedFieldId));
                         setSelectedFieldId(null);
@@ -873,8 +1100,9 @@ export default function DispatchCenterUI({
                       Delete Field
                     </button>
                   </div>
+                  
                   {selectedField.type !== 'signature' ? (
-                    <div className="flex flex-col gap-1.5 mt-1">
+                    <div className="flex flex-col gap-1.5">
                       <label htmlFor="prop-val" className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none">
                         Field Stamped Value
                       </label>
@@ -883,24 +1111,118 @@ export default function DispatchCenterUI({
                         id="prop-val"
                         value={selectedField.value}
                         onChange={(e) => updateSelectedFieldValue(e.target.value)}
-                        className="w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 text-xs font-bold text-slate-800 bg-white"
+                        className="w-full px-3 py-2.5 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 text-xs font-bold text-slate-800 bg-white"
                       />
                     </div>
                   ) : (
-                    <p className="text-[10px] text-slate-400 font-semibold leading-relaxed mt-1">
-                      Signature coordinates are dynamically controlled. Re-draw and capture on the pad above to update the digital stroke.
-                    </p>
+                    <div className="flex flex-col gap-2">
+                      <p className="text-[10px] text-slate-400 font-semibold leading-relaxed">
+                        Signature stamp is placed. You can adjust its size by dragging the corner handles on the document viewer or upload a scan.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => { setShowSigModal(true); setSigModalTab('upload'); }}
+                        className="w-fit py-1.5 px-3 bg-white hover:bg-slate-50 text-slate-600 border border-slate-200/80 rounded-xl text-[10px] font-bold transition-all shadow-sm flex items-center gap-1 cursor-pointer"
+                      >
+                        📥 Upload New Scan Image
+                      </button>
+                    </div>
                   )}
                 </div>
               ) : (
-                <div className="p-4 bg-slate-50 border border-slate-100 border-dashed rounded-2xl flex items-center justify-center text-center text-[10.5px] font-bold text-slate-400 py-6">
-                  💡 Select any field on the document to edit its contents in real time.
+                <div className="p-5 bg-slate-50 border border-slate-100 border-dashed rounded-2xl flex flex-col items-center justify-center text-center py-8 gap-1.5">
+                  <span className="text-xl">💡</span>
+                  <p className="text-[10.5px] font-bold text-slate-400 max-w-[240px]">
+                    Select a tool in the floating toolbar, click the document to place it, and adjust values here.
+                  </p>
                 </div>
               )}
+
+              {/* Acrobat Style Sidebar Field Spawner Toolbox */}
+              <div className="border border-slate-100 bg-slate-50/50 p-4.5 rounded-2xl flex flex-col gap-3">
+                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none">
+                  🛠️ Drag & Drop Fields Toolbox
+                </span>
+                <div className="grid grid-cols-2 gap-2 mt-1">
+                  <button
+                    type="button"
+                    onClick={() => addField('text')}
+                    className="py-2.5 px-3 bg-white hover:bg-indigo-50 text-indigo-600 border border-slate-200/80 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-sm hover:border-indigo-200"
+                  >
+                    📝 + Custom Text
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => addField('signature')}
+                    className="py-2.5 px-3 bg-white hover:bg-amber-50 text-amber-600 border border-slate-200/80 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-sm hover:border-amber-200"
+                  >
+                    ✍️ + Signature Pad
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => addField('name')}
+                    className="py-2.5 px-3 bg-white hover:bg-indigo-50 text-indigo-600 border border-slate-200/80 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-sm hover:border-indigo-200"
+                  >
+                    👤 + Banker Name
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => addField('title')}
+                    className="py-2.5 px-3 bg-white hover:bg-indigo-50 text-indigo-600 border border-slate-200/80 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-sm hover:border-indigo-200"
+                  >
+                    💼 + Corp Title
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => addField('date')}
+                    className="py-2.5 px-3 bg-white hover:bg-indigo-50 text-indigo-600 border border-slate-200/80 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer col-span-2 shadow-sm hover:border-indigo-200"
+                  >
+                    📅 + Todays Date stamp
+                  </button>
+                </div>
+              </div>
+
+              {/* Saved Signature Panel */}
+              <div className="border border-slate-100 p-4.5 rounded-2xl flex flex-col gap-2.5">
+                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none">
+                  🖊️ Configured Signature Ink
+                </span>
+                {signatureImage ? (
+                  <div className="flex flex-col gap-2">
+                    <div className="w-full h-[100px] bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-center p-3 relative overflow-hidden shadow-inner mt-1">
+                      <img src={signatureImage} alt="Saved Signature" className="max-w-full max-h-full object-contain pointer-events-none" />
+                      <button
+                        type="button"
+                        onClick={() => { setSignatureImage(null); setPlacedFields(prev => prev.map(f => f.type === 'signature' ? { ...f, value: '' } : f)); }}
+                        className="absolute top-2 right-2 bg-rose-50 hover:bg-rose-100 text-rose-500 rounded p-1 cursor-pointer text-[10px] font-bold"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => { setShowSigModal(true); setSigModalTab('draw'); }}
+                      className="w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-all cursor-pointer"
+                    >
+                      🔄 Re-draw Signature Pad
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => { setShowSigModal(true); setSigModalTab('draw'); }}
+                    className="w-full py-4.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 border-dashed text-slate-500 rounded-2xl text-xs font-bold transition-all flex flex-col items-center justify-center gap-2 cursor-pointer py-6 shadow-sm mt-1"
+                  >
+                    <span className="text-xl">🖊️</span>
+                    Setup Banker Signature
+                  </button>
+                )}
+              </div>
 
               {/* Execution Actions */}
               <div className="mt-auto pt-4 flex flex-col gap-2 shrink-0">
                 <button
+                  type="button"
                   onClick={handleLocalStamping}
                   disabled={loading || !signatureImage}
                   className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl shadow-xl shadow-indigo-600/10 text-sm flex items-center justify-center gap-2 transition-all active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer font-inter"
@@ -921,12 +1243,102 @@ export default function DispatchCenterUI({
                 </button>
                 
                 <button
+                  type="button"
                   onClick={() => setActiveStep('recipient')}
                   className="w-full py-2 text-xs font-bold text-slate-400 hover:text-slate-600 transition-colors text-center"
                 >
                   Back to Recipient Setup
                 </button>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* Global Draw/Upload Signature Modal Settings Dialog */}
+        {showSigModal && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 animate-fade-in p-4">
+            <div className="w-full max-w-[460px] bg-white rounded-[32px] shadow-2xl p-6 flex flex-col gap-5 border border-slate-100 overflow-hidden relative">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                <h4 className="text-base font-black text-slate-800 tracking-tight">Configure E-Signature Stamp</h4>
+                <button 
+                  type="button"
+                  onClick={() => { setShowSigModal(false); setPendingSigCoords(null); }}
+                  className="text-slate-400 hover:text-slate-600 text-lg font-bold p-1 cursor-pointer"
+                >
+                  ×
+                </button>
+              </div>
+
+              {/* Tabs */}
+              <div className="flex bg-slate-100 p-1 rounded-xl">
+                <button
+                  type="button"
+                  onClick={() => setSigModalTab('draw')}
+                  className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                    sigModalTab === 'draw' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  🖊️ Draw Stroke
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSigModalTab('upload')}
+                  className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                    sigModalTab === 'upload' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  📥 Upload Scan / PNG
+                </button>
+              </div>
+
+              {sigModalTab === 'draw' ? (
+                <div className="flex flex-col gap-4">
+                  <div className="w-full h-[200px] bg-slate-50 border-2 border-dashed border-slate-200 rounded-2xl overflow-hidden relative shadow-inner">
+                    <canvas
+                      ref={canvasRef}
+                      onMouseDown={startDrawing}
+                      onMouseMove={draw}
+                      onMouseUp={stopDrawing}
+                      onMouseLeave={stopDrawing}
+                      onTouchStart={startDrawingTouch}
+                      onTouchMove={drawTouch}
+                      onTouchEnd={stopDrawing}
+                      className="w-full h-full cursor-crosshair bg-white"
+                    />
+                    <button
+                      onClick={clearCanvas}
+                      type="button"
+                      className="absolute bottom-3 right-3 px-3 py-1.5 bg-slate-900/80 hover:bg-slate-900 text-white text-[10px] font-bold rounded-lg transition-all cursor-pointer"
+                    >
+                      Clear Pad
+                    </button>
+                  </div>
+                  <button
+                    onClick={acceptSignature}
+                    type="button"
+                    className="w-full py-3.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl transition-all cursor-pointer shadow-md shadow-indigo-600/10 font-inter"
+                  >
+                    Save & Stencil Signature
+                  </button>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-4">
+                  <div className="w-full h-[200px] border-2 border-dashed border-slate-200 hover:border-indigo-400 rounded-2xl flex flex-col items-center justify-center p-6 text-center bg-slate-50/50 hover:bg-indigo-50/20 transition-all cursor-pointer relative group">
+                    <input
+                      type="file"
+                      accept="image/png, image/jpeg, image/jpg"
+                      onChange={handleSignatureUpload}
+                      className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                    />
+                    <span className="text-3xl text-slate-400 group-hover:scale-110 transition-transform">📁</span>
+                    <span className="text-xs font-black text-slate-600 mt-2">Click to Upload Signature File</span>
+                    <span className="text-[10px] text-slate-400 font-semibold mt-1">Supports transparent PNG, JPEG, or scanned JPGs</span>
+                  </div>
+                  <div className="text-center text-[10px] text-slate-400 italic">
+                    💡 Scanning or taking a high-contrast photo of your signature works perfectly.
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}
