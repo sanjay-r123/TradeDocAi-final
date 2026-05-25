@@ -32,3 +32,6 @@ pdfservices-sdk>=4.2.0
 # ── MongoDB ───────────────────────────────
 pymongo>=4.0
 certifi>=2024.0.0
+
+# ── PDF Modification (fitz) ───────────────
+PyMuPDF>=1.24.0
