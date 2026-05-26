@@ -162,10 +162,18 @@ def _storage_client():
         if not GCS_BUCKET_NAME:
             print("  ⚠️  GCS_BUCKET_NAME not set — GCS archival disabled")
             return None
-        if not os.path.exists(GCS_CREDENTIALS_PATH):
-            print(f"  ⚠️  GCS credentials not found at {GCS_CREDENTIALS_PATH} — GCS archival disabled")
+        
+        try:
+            if os.path.exists(GCS_CREDENTIALS_PATH):
+                _gcs_client = storage.Client.from_service_account_json(GCS_CREDENTIALS_PATH)
+                print("  ☁️  Initialized GCS Client via service account JSON key.")
+            else:
+                _gcs_client = storage.Client()
+                print("  ☁️  Initialized GCS Client via default Cloud Run environment credentials (ADC).")
+        except Exception as e:
+            print(f"  ⚠️  Failed to initialize GCS client: {e}")
             return None
-        _gcs_client = storage.Client.from_service_account_json(GCS_CREDENTIALS_PATH)  # type: ignore[union-attr]
+            
     return _gcs_client
 
 
@@ -2327,6 +2335,7 @@ def api_sign_document_local(doc_id):
             p_num = int(t.get("page_num", global_page_num))
             x_pct = float(t.get("x_pct", 0.0))
             y_pct = float(t.get("y_pct", 0.0))
+            h_pct = float(t.get("h_pct", 0.05)) # Default to 5% height
             f_size = int(t.get("fontSize", 10))
             
             page = doc_pdf[p_num]
@@ -2336,8 +2345,10 @@ def api_sign_document_local(doc_id):
             # Map percentages to fitz coordinates
             tx = x_pct * page_w
             ty = y_pct * page_h
-            # In PyMuPDF, insert_text needs baseline coordinate, ty is the top, so we shift down slightly for baseline
-            page.insert_text(fitz.Point(tx, ty + f_size - 1), text, fontsize=f_size, fontname="helv", color=(0.1, 0.1, 0.1))
+            th = h_pct * page_h
+            
+            # Draw baseline near the bottom of the bounding box to perfectly align with screen placement (line-top)
+            page.insert_text(fitz.Point(tx, ty + th - 2), text, fontsize=f_size, fontname="helv", color=(0.1, 0.1, 0.1))
             
         # Save modifications to a temp file first
         temp_path = pdf_path + ".signed"

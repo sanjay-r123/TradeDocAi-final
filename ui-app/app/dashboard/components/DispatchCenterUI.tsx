@@ -571,6 +571,7 @@ export default function DispatchCenterUI({
           text: f.value,
           x_pct: f.x / 100,
           y_pct: f.y / 100,
+          h_pct: f.h / 100,
           page_num: f.pageIndex ?? 0,
           fontSize: f.fontSize ?? 11
         }));
