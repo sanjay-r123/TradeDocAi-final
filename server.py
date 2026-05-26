@@ -2396,8 +2396,9 @@ def api_sign_document_local(doc_id):
             ty = y_pct * page_h
             th = h_pct * page_h
             
-            # Draw baseline near the bottom of the bounding box to perfectly align with screen placement (line-top)
-            page.insert_text(fitz.Point(tx, ty + th - 2), text, fontsize=f_size, fontname="helv", color=(0.1, 0.1, 0.1))
+            # Center the text vertically inside the bounding box to perfectly match the React canvas alignment
+            ty_baseline = ty + (th / 2.0) + (f_size * 0.35)
+            page.insert_text(fitz.Point(tx, ty_baseline), text, fontsize=f_size, fontname="helv", color=(0.1, 0.1, 0.1))
             
         # Save modifications to a temp file first
         temp_path = pdf_path + ".signed"
