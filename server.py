@@ -129,7 +129,7 @@ _cors_origins = [
 CORS(
     app,
     resources={r"/*": {"origins": _cors_origins}},
-    expose_headers=["Content-Disposition", "X-TradeDoc-File-Id"],
+    expose_headers=["Content-Disposition", "X-TradeDoc-File-Id", "X-GCS-Object-Path"],
 )
 
 # ── Runtime / Temp PDF directory ──────────
@@ -1282,12 +1282,27 @@ def api_save_document():
         is_draft = bool(body.get("is_draft", True))
         pdf_file_id = str(body.get("pdf_file_id", "")).strip() or None
 
-        # If finalizing with a pdf_file_id, try to resolve & upload to GCS
+        # If finalizing with a pdf_file_id, try to resolve & upload to GCS.
+        # Priority: look up gcs_object_path from the pdf_jobs record first (set at generation time)
+        # because on Cloud Run the temp file may have been on a different instance.
         gcs_object_path = None
         if not is_draft and pdf_file_id and ":" in pdf_file_id:
-            pdf_path, _ = _resolve_generated_pdf({"pdf_file_id": pdf_file_id})
-            if pdf_path and os.path.exists(pdf_path):
-                gcs_object_path = _upload_to_gcs(pdf_path, g.current_user_id, doc_type)
+            job_id_part = pdf_file_id.split(":", 1)[0]
+            try:
+                job_record = get_db().pdf_jobs.find_one({"job_id": job_id_part})
+                if job_record and job_record.get("gcs_object_path"):
+                    gcs_object_path = job_record["gcs_object_path"]
+                    print(f"  ☁️  [Save] Reusing GCS path from pdf_jobs: {gcs_object_path}")
+            except Exception:
+                pass
+            # Fallback: temp file still available on this instance — upload now
+            if not gcs_object_path:
+                pdf_path, _ = _resolve_generated_pdf({"pdf_file_id": pdf_file_id})
+                if pdf_path and os.path.exists(pdf_path):
+                    gcs_object_path = _upload_to_gcs(pdf_path, g.current_user_id, doc_type)
+        # Also accept gcs_object_path sent directly from the frontend (from X-GCS-Object-Path header)
+        if not gcs_object_path:
+            gcs_object_path = str(body.get("gcs_object_path", "")).strip() or None
 
         ai_created = bool(body.get("ai_created", False))
         source_email = str(body.get("source_email", "")).strip()
@@ -1381,6 +1396,11 @@ def api_update_document(doc_id):
         body = _json_body()
         oid = ObjectId(doc_id)
         db = get_db()
+
+        # Security check: If the document is already finalized, block any updates!
+        existing_doc = db.documents.find_one({"_id": oid, "user_id": g.current_user_id}) or db.drafts.find_one({"_id": oid, "user_id": g.current_user_id})
+        if existing_doc and existing_doc.get("is_finalized"):
+            return jsonify({"error": "This document is finalized and cannot be modified."}), 403
         
         # Determine current location
         is_in_final = db.documents.find_one({"_id": oid, "user_id": g.current_user_id}) is not None
@@ -1393,6 +1413,9 @@ def api_update_document(doc_id):
             update_fields["name"] = str(body["name"])[:160]
         if "summary" in body:
             update_fields["summary"] = str(body["summary"])[:400]
+        if "is_finalized" in body:
+            update_fields["is_finalized"] = bool(body["is_finalized"])
+
         if "pdf_file_id" in body:
             val = str(body["pdf_file_id"]).strip()
             if val:
@@ -1444,14 +1467,25 @@ def api_update_document(doc_id):
             if source_email and not draft_doc.get("source_email"):
                 draft_doc["source_email"] = source_email[:10000]
             
-            # If finalizing with a pdf_file_id, try to resolve & upload to GCS
+            # If finalizing with a pdf_file_id, try to resolve & upload to GCS.
+            # Priority: reuse GCS path already stored in pdf_jobs (set at generation time)
             pdf_id = draft_doc.get("pdf_file_id", "")
             if pdf_id and ":" in pdf_id:
-                pdf_path, _ = _resolve_generated_pdf({"pdf_file_id": pdf_id})
-                if pdf_path and os.path.exists(pdf_path):
-                    gcs_path = _upload_to_gcs(pdf_path, g.current_user_id, draft_doc.get("doc_type", ""))
-                    if gcs_path:
-                        draft_doc["gcs_object_path"] = gcs_path
+                job_id_part = pdf_id.split(":", 1)[0]
+                gcs_path = None
+                try:
+                    job_record = get_db().pdf_jobs.find_one({"job_id": job_id_part})
+                    if job_record and job_record.get("gcs_object_path"):
+                        gcs_path = job_record["gcs_object_path"]
+                        print(f"  ☁️  [Finalize] Reusing GCS path from pdf_jobs: {gcs_path}")
+                except Exception:
+                    pass
+                if not gcs_path:
+                    pdf_path, _ = _resolve_generated_pdf({"pdf_file_id": pdf_id})
+                    if pdf_path and os.path.exists(pdf_path):
+                        gcs_path = _upload_to_gcs(pdf_path, g.current_user_id, draft_doc.get("doc_type", ""))
+                if gcs_path:
+                    draft_doc["gcs_object_path"] = gcs_path
             
             # Move to documents
             db.documents.insert_one(draft_doc)
@@ -1705,18 +1739,33 @@ def _generate_pdf_response(doc_type: str, generator, trade_data: dict):
     pdf_path = generator(trade_data, job_dir)
     if pdf_path and os.path.exists(pdf_path):
         filename = secure_filename(os.path.basename(pdf_path))
+        # Upload to GCS immediately while the file is guaranteed to be on disk.
+        # Cloud Run may route subsequent requests (save, sign) to a different container
+        # instance where the temp file no longer exists, so we must archive it NOW.
+        gcs_object_path = None
+        if GCS_AVAILABLE and GCS_BUCKET_NAME:
+            user_id = _safe_user_id()
+            if user_id:
+                gcs_object_path = _upload_to_gcs(pdf_path, user_id, doc_type)
         try:
-            get_db().pdf_jobs.insert_one({
+            job_record: dict = {
                 "user_id": _safe_user_id(),
                 "job_id": job_id,
                 "doc_type": doc_type,
                 "filename": filename,
                 "path": pdf_path,
                 "created_at": datetime.now(timezone.utc).isoformat(),
-            })
+            }
+            if gcs_object_path:
+                job_record["gcs_object_path"] = gcs_object_path
+            get_db().pdf_jobs.insert_one(job_record)
         except Exception:
             traceback.print_exc()
-        return _send_pdf(pdf_path)
+        resp = _send_pdf(pdf_path)
+        # Surface GCS path to frontend via header so it can be stored on the document record
+        if gcs_object_path:
+            resp.headers["X-GCS-Object-Path"] = gcs_object_path
+        return resp
     return jsonify({"error": "PDF compilation failed"}), 500
 
 
@@ -2358,17 +2407,31 @@ def api_sign_document_local(doc_id):
         # Replace the original PDF with the stamped PDF
         os.replace(temp_path, pdf_path)
         
-        # 3. If GCS is enabled, upload the partially signed PDF to GCS to overwrite the unsigned one
+        # 3. Upload the banker-signed PDF to GCS.
+        # If the unsigned PDF was already archived (gcs_object_path set), overwrite it.
+        # If not (first signing, unsigned was never uploaded), create a fresh GCS object now.
         gcs_object_path = doc_record.get("gcs_object_path", "")
-        if GCS_AVAILABLE and GCS_BUCKET_NAME and gcs_object_path:
+        if GCS_AVAILABLE and GCS_BUCKET_NAME:
             try:
                 client = _storage_client()
                 if client:
                     bucket = client.bucket(GCS_BUCKET_NAME)
+                    if not gcs_object_path:
+                        # No prior GCS path — generate one now based on user/doc_type/filename
+                        doc_type_str = doc_record.get("doc_type", "unknown")
+                        fname = os.path.basename(pdf_path)
+                        gcs_object_path = f"{g.current_user_id}/{doc_type_str}/{fname}"
+                        print(f"  ☁️  [Sign] Creating new GCS object for unsigned→signed: {gcs_object_path}")
                     blob = bucket.blob(gcs_object_path)
                     with open(pdf_path, "rb") as f:
                         blob.upload_from_string(f.read(), content_type="application/pdf")
-                    print(f"  ☁️  Partially signed PDF synced to GCS: {gcs_object_path}")
+                    print(f"  ☁️  Banker-signed PDF synced to GCS: {gcs_object_path}")
+                    # Persist the GCS path back to the document record if it was newly set
+                    if not doc_record.get("gcs_object_path"):
+                        collection.update_one(
+                            {"_id": oid},
+                            {"$set": {"gcs_object_path": gcs_object_path}}
+                        )
             except Exception as e:
                 print(f"  ⚠️  Error uploading stamped PDF to GCS: {e}")
                 

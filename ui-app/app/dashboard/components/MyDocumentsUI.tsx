@@ -450,26 +450,45 @@ export default function MyDocumentsUI({
                 </button>
 
                 {/* Form / Edit Data */}
-                <button
-                  onClick={handleFormView}
-                  title="View Form Data"
-                  className="p-2 rounded-lg hover:bg-amber-50 text-slate-500 hover:text-amber-600 transition-colors"
-                >
-                  <svg
-                    width="16"
-                    height="16"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
+                {selectedDoc.is_finalized ? (
+                  <button
+                    onClick={handleFormView}
+                    title="View Form Data (Read-Only)"
+                    className="p-2 rounded-lg hover:bg-slate-100 text-slate-500 hover:text-slate-600 transition-colors"
                   >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth="2"
-                      d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-                    />
-                  </svg>
-                </button>
+                    <svg
+                      width="16"
+                      height="16"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" strokeWidth="2" />
+                      <path d="M7 11V7a5 5 0 0110 0v4" strokeWidth="2" />
+                    </svg>
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleFormView}
+                    title="View Form Data"
+                    className="p-2 rounded-lg hover:bg-amber-50 text-slate-500 hover:text-amber-600 transition-colors"
+                  >
+                    <svg
+                      width="16"
+                      height="16"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth="2"
+                        d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                      />
+                    </svg>
+                  </button>
+                )}
 
                 {/* Close Preview */}
                 <button

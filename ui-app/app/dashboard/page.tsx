@@ -103,6 +103,8 @@ export default function DashboardPage() {
   const [aiMode, setAiMode] = useState(false);
   const [aiEmailText, setAiEmailText] = useState('');
   const [editingDocId, setEditingDocId] = useState<string | null>(null);
+  const [isFinalized, setIsFinalized] = useState(false);
+  const [finalizeConfirmOpen, setFinalizeConfirmOpen] = useState(false);
   const [recentDocs, setRecentDocs] = useState<RecentDoc[]>([]);
   const [validationReport, setValidationReport] = useState('');
   const [validationPanelOpen, setValidationPanelOpen] = useState(false);
@@ -240,6 +242,7 @@ export default function DashboardPage() {
     setAiMode(false);
     setAiEmailText('');
     setEditingDocId(null);
+    setIsFinalized(false);
     fetchRecentDocs();
     setModal('none');
   }, [fetchRecentDocs]);
@@ -259,6 +262,7 @@ export default function DashboardPage() {
       setAiMode(false);
       setAiEmailText('');
       setEditingDocId(null);
+      setIsFinalized(false);
       setModal('none');
     } else if (page === 'form') {
       // From any other source, go home
@@ -293,7 +297,7 @@ export default function DashboardPage() {
     return data;
   }, [activeSchema, stepData, irsSelections]);
 
-  const saveDocument = useCallback(async (data: Record<string, unknown>, isDraft: boolean = true, pdfFileId: string = ''): Promise<string | null> => {
+  const saveDocument = useCallback(async (data: Record<string, unknown>, isDraft: boolean = true, pdfFileId: string = '', gcsObjectPath: string = ''): Promise<string | null> => {
     if (!activeSchema) return null;
     let summary = '';
     if (activeSchema.id === 'fx_ndf') summary = `${data.reference_currency || '?'}/${data.settlement_currency || '?'} — ${data.notional_amount || ''}`;
@@ -312,6 +316,7 @@ export default function DashboardPage() {
         is_draft: isDraft
       };
       if (pdfFileId) { payload.pdf_file_id = pdfFileId; }
+      if (gcsObjectPath) { payload.gcs_object_path = gcsObjectPath; }
       if (aiMode && aiEmailText) { payload.source_email = aiEmailText; }
 
       if (editingDocId) {
@@ -383,15 +388,17 @@ export default function DashboardPage() {
       const match = contentDisp.match(/filename=([^;]+)/);
       if (match) filename = match[1].replace(/"/g, '').trim();
       const fileId = response.headers.get('X-TradeDoc-File-Id') || '';
+      // Read GCS path returned by backend (uploaded immediately at generation time)
+      const gcsPath = response.headers.get('X-GCS-Object-Path') || '';
       setCurrentPdfFileId(fileId);
-      setCurrentGcsObjectPath('');
+      setCurrentGcsObjectPath(gcsPath);
       if (currentPdfBlobUrl) URL.revokeObjectURL(currentPdfBlobUrl);
       const url = URL.createObjectURL(blob);
       setCurrentPdfBlobUrl(url);
       setCurrentPdfFilename(filename);
       
-      // Finalize the document when PDF is generated (pass pdf_file_id)
-      await saveDocument(data, false, fileId);
+      // Finalize the document, passing both the pdf_file_id and the already-uploaded gcs_object_path
+      await saveDocument(data, false, fileId, gcsPath);
       
       hideLoading();
       setShowValidateOnPdf(aiMode);
@@ -629,6 +636,7 @@ export default function DashboardPage() {
       setAiMode(full.ai_created || false);
       setAiEmailText(full.source_email || '');
       setEditingDocId(full._id);
+      setIsFinalized(full.is_finalized || false);
       const newStepData: Record<string, unknown> = {};
       const newIrsSelections: Record<string, string> = {};
       for (const [key, value] of Object.entries(data)) {
@@ -678,6 +686,7 @@ export default function DashboardPage() {
       setAiMode(full.ai_created || false);
       setAiEmailText(full.source_email || '');
       setEditingDocId(full._id);
+      setIsFinalized(full.is_finalized || false);
       const newStepData: Record<string, unknown> = {};
       const newIrsSelections: Record<string, string> = {};
       for (const [key, value] of Object.entries(data)) {
@@ -748,15 +757,10 @@ export default function DashboardPage() {
     }
   }, [currentPdfBlobUrl, schemas, showToast, checkExistingValidationReport]);
 
-  const handleFinishDocument = useCallback(async () => {
-    if (!editingDocId) {
-      showToast('⚠️ No document loaded to finish');
-      return;
-    }
-    const yes = window.confirm("Do you want to finish this document? Once finished, it will be marked as Completed.");
-    if (!yes) return;
-
-    showLoading('Finalizing document...', 'Updating status to Completed');
+  const executeFinalizeDocument = useCallback(async () => {
+    if (!editingDocId) return;
+    setFinalizeConfirmOpen(false);
+    showLoading('Finalizing document...', 'Freezing form fields & status');
     try {
       const response = await fetch(`${API}/api/documents/${editingDocId}`, {
         method: 'PUT',
@@ -764,6 +768,8 @@ export default function DashboardPage() {
         body: JSON.stringify({
           is_draft: false,
           validation_status: 'completed',
+          is_finalized: true,
+          status: 'compiled'  // The document's status transitions to 'compiled' upon finalizing
         }),
       });
 
@@ -774,7 +780,8 @@ export default function DashboardPage() {
       }
 
       hideLoading();
-      showToast('🎉 Document finished successfully!');
+      showToast('🎉 Document finalized successfully!');
+      setIsFinalized(true);
       fetchRecentDocs();
       goHome();
     } catch {
@@ -782,6 +789,14 @@ export default function DashboardPage() {
       showToast('❌ Error finalizing document');
     }
   }, [editingDocId, showToast, fetchRecentDocs, goHome]);
+
+  const handleFinishDocument = useCallback(() => {
+    if (!editingDocId) {
+      showToast('⚠️ No document loaded to finish');
+      return;
+    }
+    setFinalizeConfirmOpen(true);
+  }, [editingDocId, showToast]);
 
   const getSteps = useCallback((): Array<{ id: string; title: string }> => {
     if (!activeSchema) return [];
@@ -856,10 +871,10 @@ export default function DashboardPage() {
           allFields.find(f => f.key === key)
         ).filter(Boolean) as SchemaField[];
         
-        return <FieldsStep title={step.title} fields={resolvedFields} stepData={stepData} onUpdate={(k, v) => setStepData(p => ({ ...p, [k]: v }))} aiMode={aiMode} allData={{ ...irsSelections, ...stepData }} onFieldFocus={setActiveFieldKey} activeFieldKey={activeFieldKey} />;
+        return <FieldsStep title={step.title} fields={resolvedFields} stepData={stepData} onUpdate={(k, v) => setStepData(p => ({ ...p, [k]: v }))} aiMode={aiMode} allData={{ ...irsSelections, ...stepData }} onFieldFocus={setActiveFieldKey} activeFieldKey={activeFieldKey} disabled={isFinalized} />;
       }
       
-      return <SelectionStep stepDef={step} selections={irsSelections} onSelect={(k, v) => setIrsSelections(p => ({ ...p, [k]: v }))} />;
+      return <SelectionStep stepDef={step} selections={irsSelections} onSelect={(k, v) => setIrsSelections(p => ({ ...p, [k]: v }))} disabled={isFinalized} />;
     }
 
     // 2. Handle Sections (after wizard steps are complete)
@@ -889,11 +904,11 @@ export default function DashboardPage() {
         return true;
       });
       const section = sectionEntries[sectionIdx]?.[1] as SchemaSection;
-      return section ? <SectionStep section={section} stepData={stepData} onUpdate={(k, v) => setStepData(p => ({ ...p, [k]: v }))} aiMode={aiMode} allData={{ ...irsSelections, ...stepData }} onFieldFocus={setActiveFieldKey} activeFieldKey={activeFieldKey} /> : null;
+      return section ? <SectionStep section={section} stepData={stepData} onUpdate={(k, v) => setStepData(p => ({ ...p, [k]: v }))} aiMode={aiMode} allData={{ ...irsSelections, ...stepData }} onFieldFocus={setActiveFieldKey} activeFieldKey={activeFieldKey} disabled={isFinalized} /> : null;
     }
     
     const sec = activeSchema.sections[currentStep];
-    return sec ? <FieldsStep title={sec.title} fields={sec.fields || []} stepData={stepData} onUpdate={(k, v) => setStepData(p => ({ ...p, [k]: v }))} aiMode={aiMode} allData={{ ...irsSelections, ...stepData }} onFieldFocus={setActiveFieldKey} activeFieldKey={activeFieldKey} /> : null;
+    return sec ? <FieldsStep title={sec.title} fields={sec.fields || []} stepData={stepData} onUpdate={(k, v) => setStepData(p => ({ ...p, [k]: v }))} aiMode={aiMode} allData={{ ...irsSelections, ...stepData }} onFieldFocus={setActiveFieldKey} activeFieldKey={activeFieldKey} disabled={isFinalized} /> : null;
   };
 
   // ── ChatSidebar helpers ─────────────────────
@@ -1167,16 +1182,26 @@ export default function DashboardPage() {
               {page === 'form' && (
                 <>
                   <button
+                    disabled={isFinalized}
                     onClick={() => saveDocument(assembleJSON(), true)}
-                    className="px-4 py-2 rounded-xl bg-white border border-slate-200 text-slate-600 text-sm font-bold font-inter hover:bg-slate-50 hover:border-slate-300 transition-colors shadow-sm"
+                    className={`px-4 py-2 rounded-xl border text-sm font-bold font-inter transition-colors shadow-sm ${
+                      isFinalized 
+                        ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' 
+                        : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300'
+                    }`}
                   >
                     Save Draft
                   </button>
                   <button
+                    disabled={isFinalized}
                     onClick={generatePDF}
-                    className="px-5 py-2 rounded-xl bg-indigo-600 text-white text-sm font-bold font-inter hover:bg-indigo-700 transition-colors shadow-sm"
+                    className={`px-5 py-2 rounded-xl text-sm font-bold font-inter transition-colors shadow-sm ${
+                      isFinalized 
+                        ? 'bg-slate-200 border border-slate-300 text-slate-400 cursor-not-allowed' 
+                        : 'bg-indigo-600 text-white hover:bg-indigo-700'
+                    }`}
                   >
-                    Generate PDF
+                    {isFinalized ? '🔒 Generate PDF' : 'Generate PDF'}
                   </button>
                 </>
               )}
@@ -1394,6 +1419,29 @@ export default function DashboardPage() {
 
           {page === 'form' && (
             <div className="max-w-2xl mx-auto">
+              {/* Finalized Locked Banner */}
+              {isFinalized && (
+                <div
+                  className="mb-7 flex items-center gap-4 animate-in fade-in slide-in-from-top-2 duration-700"
+                  style={{
+                    padding: '14px 20px',
+                    background: 'linear-gradient(135deg, rgba(239,68,68,0.07) 0%, rgba(220,38,38,0.05) 100%)',
+                    border: '1px solid rgba(239,68,68,0.18)',
+                    borderLeft: '3px solid #ef4444',
+                    borderRadius: '16px',
+                  }}
+                >
+                  <div
+                    className="w-9 h-9 text-white rounded-xl flex items-center justify-center text-base shrink-0 animate-pulse"
+                    style={{ background: 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)', boxShadow: '0 4px 12px rgba(239,68,68,0.28)' }}
+                  >🔒</div>
+                  <div>
+                    <p style={{ fontSize: '13px', fontWeight: 700, color: '#991b1b', fontFamily: "'DM Sans', system-ui, sans-serif" }}>🔒 This document is finalized — view only</p>
+                    <p style={{ fontSize: '10px', color: '#ef4444', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.1em', fontFamily: "'DM Sans', system-ui, sans-serif" }}>Field inputs are permanently frozen and cannot be modified</p>
+                  </div>
+                </div>
+              )}
+
               {/* AI Mode Banner */}
               {aiMode && (
                 <div
@@ -1514,27 +1562,46 @@ export default function DashboardPage() {
                       cursor: currentStep === 0 ? 'not-allowed' : 'pointer',
                     }}
                   >Back</button>
-                  <button
-                    onClick={handleNext}
-                    style={{
-                      padding: '16px 48px',
-                      borderRadius: '16px',
-                      background: '#4f46e5',
-                      color: 'white',
-                      fontSize: '16px',
-                      fontWeight: 700,
-                      fontFamily: "'DM Sans', system-ui, sans-serif",
-                      border: 'none',
-                      boxShadow: '0 10px 25px rgba(79,70,229,0.2)',
-                      letterSpacing: '-0.01em',
-                      cursor: 'pointer',
-                      transition: 'all 0.2s ease'
-                    }}
-                    onMouseEnter={(e) => e.currentTarget.style.background = '#4338ca'}
-                    onMouseLeave={(e) => e.currentTarget.style.background = '#4f46e5'}
-                  >
-                    {currentStep === steps.length - 1 ? 'Generate Confirmation' : 'Continue'}
-                  </button>
+                  {isFinalized ? (
+                    <button
+                      disabled
+                      style={{
+                        padding: '16px 48px',
+                        borderRadius: '16px',
+                        background: '#e2e8f0',
+                        color: '#94a3b8',
+                        fontSize: '16px',
+                        fontWeight: 700,
+                        fontFamily: "'DM Sans', system-ui, sans-serif",
+                        border: '1px solid #cbd5e1',
+                        cursor: 'not-allowed',
+                      }}
+                    >
+                      🔒 Locked (Finalized)
+                    </button>
+                  ) : (
+                    <button
+                      onClick={handleNext}
+                      style={{
+                        padding: '16px 48px',
+                        borderRadius: '16px',
+                        background: '#4f46e5',
+                        color: 'white',
+                        fontSize: '16px',
+                        fontWeight: 700,
+                        fontFamily: "'DM Sans', system-ui, sans-serif",
+                        border: 'none',
+                        boxShadow: '0 10px 25px rgba(79,70,229,0.2)',
+                        letterSpacing: '-0.01em',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s ease'
+                      }}
+                      onMouseEnter={(e) => e.currentTarget.style.background = '#4338ca'}
+                      onMouseLeave={(e) => e.currentTarget.style.background = '#4f46e5'}
+                    >
+                      {currentStep === steps.length - 1 ? 'Generate Confirmation' : 'Continue'}
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -1555,6 +1622,7 @@ export default function DashboardPage() {
               onConvertToWord={downloadWord}
               generatingValidation={loading}
               onFinish={handleFinishDocument}
+              isFinalized={isFinalized}
             />
           )}
         </div>
@@ -1766,6 +1834,63 @@ export default function DashboardPage() {
                   </div>
                 </button>
               ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Premium Finalize Confirmation Modal */}
+      {finalizeConfirmOpen && (
+        <div className="fixed inset-0 z-[999] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-300">
+          <div className="absolute inset-0" onClick={() => setFinalizeConfirmOpen(false)} />
+          <div 
+            className="bg-white rounded-[32px] w-full max-w-md relative shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300 mx-4"
+            style={{ border: '1px solid rgba(226,232,240,0.8)' }}
+          >
+            <div className="p-8 text-center flex flex-col items-center">
+              {/* Warning Icon */}
+              <div 
+                className="w-16 h-16 rounded-3xl bg-amber-50 border border-amber-100 flex items-center justify-center text-3xl mb-6 animate-bounce"
+                style={{ animationDuration: '3s' }}
+              >
+                ⚠️
+              </div>
+              <h3 className="text-xl font-bold text-slate-800 tracking-tight mb-2">Finalize Trade Confirmation?</h3>
+              <p className="text-sm text-slate-500 mb-6 max-w-sm leading-relaxed">
+                You are about to lock this document for dispatch. Once finalized, the following rules apply:
+              </p>
+              
+              {/* Bullet Points Container */}
+              <div className="w-full bg-slate-50/80 border border-slate-100 rounded-2xl p-5 mb-8 text-left space-y-3">
+                <div className="flex gap-3 text-slate-600 text-xs font-semibold font-inter">
+                  <span className="text-amber-500 text-sm">🔒</span>
+                  <span>All form fields will become permanently read-only</span>
+                </div>
+                <div className="flex gap-3 text-slate-600 text-xs font-semibold font-inter">
+                  <span className="text-amber-500 text-sm">❄️</span>
+                  <span>The JSON trade parameters will be frozen</span>
+                </div>
+                <div className="flex gap-3 text-slate-600 text-xs font-semibold font-inter">
+                  <span className="text-amber-500 text-sm">🔄</span>
+                  <span>Any corrections will require starting a new document</span>
+                </div>
+              </div>
+              
+              {/* Modal Buttons */}
+              <div className="flex gap-3 w-full">
+                <button 
+                  onClick={() => setFinalizeConfirmOpen(false)} 
+                  className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl font-bold text-sm transition-all"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={executeFinalizeDocument} 
+                  className="flex-1 py-3 px-4 bg-gradient-to-r from-amber-500 to-rose-600 hover:from-amber-600 hover:to-rose-700 text-white rounded-xl font-bold text-sm shadow-md transition-all active:scale-95"
+                >
+                  Yes, Finalize
+                </button>
+              </div>
             </div>
           </div>
         </div>

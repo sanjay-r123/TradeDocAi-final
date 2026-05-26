@@ -65,6 +65,8 @@ export default function DispatchCenterUI({
   
   // Custom Local Signature states
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  /** Ref to the inner 600px PDF wrapper inside LocalSigningCanvas — used for precise drag coordinate math */
+  const pdfContainerRef = useRef<HTMLDivElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [signatureImage, setSignatureImage] = useState<string | null>(null);
   const [bankerName, setBankerName] = useState('Sanjay R');
@@ -432,8 +434,13 @@ export default function DispatchCenterUI({
   // Draggable & Resizable Handlers
   const onDragMove = (e: React.MouseEvent) => {
     if (!activeDragId && !activeResizeId) return;
-    const pageEl = document.querySelector('.react-pdf__Page');
-    const container = pageEl ? pageEl.getBoundingClientRect() : e.currentTarget.getBoundingClientRect();
+    // Always measure the exact 600px inner PDF wrapper (the same element fields are positioned inside).
+    // This avoids the previous bug where .react-pdf__Page was queried globally and had
+    // a different bounding box / scroll offset to the actual overlay container.
+    const containerEl = pdfContainerRef.current;
+    const container = containerEl
+      ? containerEl.getBoundingClientRect()
+      : e.currentTarget.getBoundingClientRect();
     
     const deltaX = ((e.clientX - dragStart.x) / container.width) * 100;
     const deltaY = ((e.clientY - dragStart.y) / container.height) * 100;
@@ -934,6 +941,7 @@ export default function DispatchCenterUI({
               signatureImage={signatureImage}
               setShowSigModal={setShowSigModal}
               setPendingSigCoords={setPendingSigCoords}
+              containerRef={pdfContainerRef}
             />
 
             {/* Right Panel: Side Panel controls & Properties Editor */}

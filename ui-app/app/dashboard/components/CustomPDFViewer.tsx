@@ -26,6 +26,7 @@ interface CustomPDFViewerProps {
   hideSidebar?: boolean;
   hideToolbar?: boolean;
   onFinish?: () => void;
+  isFinalized?: boolean;
 }
 
 export default function CustomPDFViewer({
@@ -45,6 +46,7 @@ export default function CustomPDFViewer({
   hideSidebar = false,
   hideToolbar = false,
   onFinish,
+  isFinalized,
 }: CustomPDFViewerProps) {
   const [numPages, setNumPages] = useState<number>(0);
   const [pageNumber, setPageNumber] = useState<number>(1);
@@ -79,17 +81,31 @@ export default function CustomPDFViewer({
 
           {/* Right: Context-Aware Action Buttons */}
           <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap justify-end">
-            {/* Finish button (mocked, no functionality yet) */}
-            <button
-              onClick={onFinish}
-              className="px-3.5 py-2 rounded-xl bg-indigo-600 text-white text-xs sm:text-sm font-black hover:bg-indigo-700 transition-colors shadow-sm whitespace-nowrap"
-              title="Finish Document"
-            >
-              <span className="flex items-center gap-1.5">
-                <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7"/></svg>
-                Finish
-              </span>
-            </button>
+            {/* Finish / Finalized button */}
+            {isFinalized ? (
+              <button
+                disabled
+                className="px-3.5 py-2 rounded-xl bg-slate-200 border border-slate-300 text-slate-400 text-xs sm:text-sm font-black cursor-not-allowed flex items-center gap-1.5 shrink-0 select-none"
+                title="Document Finalized (Read-Only)"
+              >
+                <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                  <path d="M7 11V7a5 5 0 0110 0v4" />
+                </svg>
+                Finalized
+              </button>
+            ) : (
+              <button
+                onClick={onFinish}
+                className="px-3.5 py-2 rounded-xl bg-indigo-600 text-white text-xs sm:text-sm font-black hover:bg-indigo-700 transition-colors shadow-sm whitespace-nowrap"
+                title="Finish Document"
+              >
+                <span className="flex items-center gap-1.5">
+                  <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7"/></svg>
+                  Finish
+                </span>
+              </button>
+            )}
 
             {/* Convert to Word */}
             <button

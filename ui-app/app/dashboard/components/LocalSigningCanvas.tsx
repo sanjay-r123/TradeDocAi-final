@@ -41,6 +41,8 @@ interface LocalSigningCanvasProps {
   signatureImage: string | null;
   setShowSigModal: (show: boolean) => void;
   setPendingSigCoords: (coords: { x: number, y: number, pageIndex: number } | null) => void;
+  /** Ref attached to the inner 600px PDF wrapper — used by parent for precise drag coordinate math */
+  containerRef?: React.RefObject<HTMLDivElement | null>;
 }
 
 export default function LocalSigningCanvas({
@@ -61,6 +63,7 @@ export default function LocalSigningCanvas({
   signatureImage,
   setShowSigModal,
   setPendingSigCoords,
+  containerRef,
 }: LocalSigningCanvasProps) {
   const [numPages, setNumPages] = React.useState<number | null>(null);
   const [currentPage, setCurrentPage] = React.useState<number>(1);
@@ -128,6 +131,7 @@ export default function LocalSigningCanvas({
 
       {/* Centered Document Wrapper matching standard page boundaries */}
       <div 
+        ref={containerRef}
         style={{
           width: '600px', // Exact rendered PDF width
           position: 'relative'

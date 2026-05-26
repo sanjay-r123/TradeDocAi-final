@@ -324,16 +324,29 @@ export default function RecentDocuments({ documents, onLoad, onView, onCreateNew
                           </svg>
                         </button>
                       )}
-                      {/* Edit document — always enabled */}
-                      <button
-                        onClick={() => onLoad(doc)}
-                        title="Edit document"
-                        className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:bg-amber-50 hover:text-amber-600 transition-all"
-                      >
-                        <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                        </svg>
-                      </button>
+                      {/* Edit or View Document Form — conditionally render look */}
+                      {doc.is_finalized ? (
+                        <button
+                          onClick={() => onLoad(doc)}
+                          title="View Form Data (Read-Only)"
+                          className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-all"
+                        >
+                          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <rect x="3" y="11" width="18" height="11" rx="2" ry="2" strokeWidth="2" />
+                            <path d="M7 11V7a5 5 0 0110 0v4" strokeWidth="2" />
+                          </svg>
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => onLoad(doc)}
+                          title="Edit document"
+                          className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:bg-amber-50 hover:text-amber-600 transition-all"
+                        >
+                          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                          </svg>
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>

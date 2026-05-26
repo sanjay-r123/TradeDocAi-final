@@ -64,6 +64,7 @@ export interface RecentDoc {
   signed_pdf_url?: string;
   docuseal_submission_id?: string;
   signer_email?: string;
+  is_finalized?: boolean;
 }
 
 export type AppPage = 'landing' | 'analytics' | 'ai' | 'form' | 'pdf' | 'settings' | 'my-documents' | 'dispatch';
