@@ -177,15 +177,18 @@ def _storage_client():
     return _gcs_client
 
 
-def _upload_to_gcs(local_pdf_path: str, user_id: str, doc_type: str) -> str | None:
-    """Upload a PDF to Google Cloud Storage. Returns the GCS object path or None on failure."""
+def _upload_to_gcs(local_pdf_path: str, user_id: str, doc_type: str, job_id: str = None) -> str | None:
+    \"\"\"Upload a PDF to Google Cloud Storage. Returns the GCS object path or None on failure.\"\"\"
     client = _storage_client()
     if not client:
         return None
     try:
         bucket = client.bucket(GCS_BUCKET_NAME)
         filename = os.path.basename(local_pdf_path)
-        object_path = f"{user_id}/{doc_type}/{filename}"
+        if job_id:
+            object_path = f"{user_id}/{doc_type}/{job_id}_{filename}"
+        else:
+            object_path = f"{user_id}/{doc_type}/{filename}"
         blob = bucket.blob(object_path)
         blob.upload_from_filename(local_pdf_path, content_type="application/pdf")
         print(f"  ☁️  Uploaded to GCS: gs://{GCS_BUCKET_NAME}/{object_path}")
@@ -1252,7 +1255,7 @@ def api_save_document():
             if not gcs_object_path:
                 pdf_path, _ = _resolve_generated_pdf({"pdf_file_id": pdf_file_id})
                 if pdf_path and os.path.exists(pdf_path):
-                    gcs_object_path = _upload_to_gcs(pdf_path, g.current_user_id, doc_type)
+                    gcs_object_path = _upload_to_gcs(pdf_path, g.current_user_id, doc_type, job_id_part)
         # Also accept gcs_object_path sent directly from the frontend (from X-GCS-Object-Path header)
         if not gcs_object_path:
             gcs_object_path = str(body.get("gcs_object_path", "")).strip() or None
@@ -1373,6 +1376,10 @@ def api_update_document(doc_id):
             val = str(body["pdf_file_id"]).strip()
             if val:
                 update_fields["pdf_file_id"] = val
+        if "gcs_object_path" in body:
+            val = str(body["gcs_object_path"]).strip()
+            if val:
+                update_fields["gcs_object_path"] = val
         if "validation_status" in body:
             val = str(body["validation_status"]).strip()
             if val in ["pending", "verified", "completed"]:
@@ -1436,7 +1443,7 @@ def api_update_document(doc_id):
                 if not gcs_path:
                     pdf_path, _ = _resolve_generated_pdf({"pdf_file_id": pdf_id})
                     if pdf_path and os.path.exists(pdf_path):
-                        gcs_path = _upload_to_gcs(pdf_path, g.current_user_id, draft_doc.get("doc_type", ""))
+                        gcs_path = _upload_to_gcs(pdf_path, g.current_user_id, draft_doc.get("doc_type", ""), job_id_part)
                 if gcs_path:
                     draft_doc["gcs_object_path"] = gcs_path
             
@@ -1481,7 +1488,7 @@ def api_update_document(doc_id):
                 if pdf_id and ":" in pdf_id:
                     pdf_path, _ = _resolve_generated_pdf({"pdf_file_id": pdf_id})
                     if pdf_path and os.path.exists(pdf_path):
-                        gcs_path = _upload_to_gcs(pdf_path, g.current_user_id, doc.get("doc_type", ""))
+                        gcs_path = _upload_to_gcs(pdf_path, g.current_user_id, doc.get("doc_type", ""), pdf_id.split(":", 1)[0])
                         if gcs_path:
                             update_fields["gcs_object_path"] = gcs_path
 
@@ -1699,7 +1706,7 @@ def _generate_pdf_response(doc_type: str, generator, trade_data: dict):
         if GCS_AVAILABLE and GCS_BUCKET_NAME:
             user_id = _safe_user_id()
             if user_id:
-                gcs_object_path = _upload_to_gcs(pdf_path, user_id, doc_type)
+                gcs_object_path = _upload_to_gcs(pdf_path, user_id, doc_type, job_id)
         try:
             job_record: dict = {
                 "user_id": _safe_user_id(),

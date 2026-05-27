@@ -383,10 +383,12 @@ export default function DashboardPage() {
         hideLoading(); showToast('❌ ' + errMsg); return;
       }
       const blob = await response.blob();
-      const contentDisp = response.headers.get('Content-Disposition') || '';
-      let filename = 'confirmation.pdf';
-      const match = contentDisp.match(/filename=([^;]+)/);
-      if (match) filename = match[1].replace(/"/g, '').trim();
+      let summary = '';
+      if (activeSchema.id === 'fx_ndf') summary = `${data.reference_currency || '?'}_${data.settlement_currency || '?'}_${data.notional_amount || ''}`;
+      else if (activeSchema.id === 'cds') summary = `${data.reference_entity || '?'}_${data.notional_amount || ''}_${data.fixed_rate || '?'}bps`;
+      else if (activeSchema.id === 'equity_trs') summary = `Model_${data.model_type || '?'}_${data.party_a_name || '?'}_vs_${data.party_b_name || '?'}`;
+      else summary = `Exhibit_${(data.exhibit as string) || '?'}_${data.party_a_name || '?'}_vs_${data.party_b_name || '?'}`;
+      let filename = summary.replace(/[\\/*?:"<>|&\s]/g, '_') + '.pdf';
       const fileId = response.headers.get('X-TradeDoc-File-Id') || '';
       // Read GCS path returned by backend (uploaded immediately at generation time)
       const gcsPath = response.headers.get('X-GCS-Object-Path') || '';

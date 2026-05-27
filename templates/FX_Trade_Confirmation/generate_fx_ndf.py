@@ -188,11 +188,8 @@ def compile_to_pdf(tex_content: str, trade_data: dict, output_dir: str = None) -
     out_dir = output_dir or OUTPUT_DIR
     os.makedirs(out_dir, exist_ok=True)
 
-    # Create output filename from trade details
-    ref_ccy = trade_data.get("reference_currency", "CCY")
-    stl_ccy = trade_data.get("settlement_currency", "USD")
-    date = trade_data.get("trade_date", "").replace(" ", "_")
-    output_name = f"FX_NDF_{ref_ccy}_{stl_ccy}_{date}"
+    # Use a generic filename since the directory is already unique per job
+    output_name = "document"
 
     tex_path = os.path.join(out_dir, f"{output_name}.tex")
     pdf_path = os.path.join(out_dir, f"{output_name}.pdf")

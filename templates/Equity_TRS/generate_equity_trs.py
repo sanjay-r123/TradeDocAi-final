@@ -81,11 +81,8 @@ def compile_to_pdf(tex_content, trade_data, output_dir=None):
     out_dir = output_dir or OUTPUT_DIR
     os.makedirs(out_dir, exist_ok=True)
 
-    # Naming convention: Confirmation_TRS_[Model]_[PartyA]_[Date]
-    model    = trade_data.get("model_type", "I")
-    party_a  = trade_data.get("party_a_name", "PartyA").replace(" ", "_")
-    date     = trade_data.get("trade_date", "Date").replace(" ", "_").replace("/", "-")
-    name     = f"Confirmation_EquityTRS_Model{model}_{party_a}_{date}"
+    # Use a generic filename since the directory is already unique per job
+    name     = "document"
 
     tex_path = os.path.join(out_dir, f"{name}.tex")
     pdf_path = os.path.join(out_dir, f"{name}.pdf")

@@ -66,11 +66,8 @@ def compile_to_pdf(tex_content, trade_data, output_dir=None):
     out_dir = output_dir or OUTPUT_DIR
     os.makedirs(out_dir, exist_ok=True)
 
-    party_a  = trade_data.get("party_a_name", "PartyA").replace(" ", "_")
-    date     = trade_data.get("trade_date", "UnknownDate").replace(" ", "_")
-    
-    # Clean naming convention specific to CDS
-    name     = f"CDS_Confirmation_{party_a}_{date}"
+    # Use a generic filename since the directory is already unique per job
+    name     = "document"
 
     tex_path = os.path.join(out_dir, f"{name}.tex")
     pdf_path = os.path.join(out_dir, f"{name}.pdf")
