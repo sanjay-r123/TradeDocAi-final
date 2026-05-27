@@ -178,7 +178,7 @@ def _storage_client():
 
 
 def _upload_to_gcs(local_pdf_path: str, user_id: str, doc_type: str, job_id: str = None) -> str | None:
-    \"\"\"Upload a PDF to Google Cloud Storage. Returns the GCS object path or None on failure.\"\"\"
+    """Upload a PDF to Google Cloud Storage. Returns the GCS object path or None on failure."""
     client = _storage_client()
     if not client:
         return None
