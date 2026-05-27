@@ -2268,7 +2268,18 @@ def api_sign_document_local(doc_id):
             return jsonify({"error": "Compiled PDF file not found. Please compile the PDF first."}), 404
             
         pdf_path, pdf_filename = _resolve_generated_pdf({"pdf_file_id": file_id})
-        if not pdf_path or not os.path.exists(pdf_path):
+        
+        if not pdf_path:
+            # Reconstruct the expected path to save the GCS fallback
+            if ":" in file_id:
+                job_id, filename = file_id.split(":", 1)
+                job_id = secure_filename(job_id)
+                user_id = _safe_user_id()
+                pdf_path = os.path.abspath(os.path.join(TEMP_PDF_DIR, user_id, job_id, filename))
+            else:
+                return jsonify({"error": "Invalid pdf_file_id format."}), 400
+
+        if not os.path.exists(pdf_path):
             # Try GCS fallback
             gcs_path = doc_record.get("gcs_object_path", "")
             if gcs_path:
@@ -2278,6 +2289,10 @@ def api_sign_document_local(doc_id):
                     os.makedirs(os.path.dirname(pdf_path), exist_ok=True)
                     with open(pdf_path, "wb") as f:
                         f.write(pdf_bytes)
+                else:
+                    return jsonify({"error": "Could not download PDF from GCS."}), 404
+            else:
+                return jsonify({"error": "Original PDF not found locally or in GCS."}), 404
             
         # Keep a backup of the original unsigned PDF so we can re-stamp from clean copy if the user adjusts layout!
         unsigned_backup = pdf_path + ".unsigned"
