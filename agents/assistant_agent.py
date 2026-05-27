@@ -1,254 +1,115 @@
 import json
 
-def build_assistant_prompt(message: str, doc_type: str, schema: dict, current_data: dict, history: list) -> str:
-    """
-    Constructs the prompt with context (schema, filled data, history) for the form-aware assistant.
-    """
+def _get_doc_display(doc_type: str) -> str:
     doc_name_map = {
         "fx_ndf":     "FX Non-Deliverable Forward (NDF)",
         "irs":        "Interest Rate Swap (IRS) Confirmation",
         "cds":        "Credit Default Swap (CDS) Confirmation",
         "equity_trs": "Equity Total Return Swap (TRS) Confirmation",
     }
-    doc_display = doc_name_map.get(doc_type, doc_type.upper())
+    return doc_name_map.get(doc_type, doc_type.upper() if doc_type else "Document")
 
-    # Build schema summary — field labels + keys for context
-    def summarise_schema(s):
-        lines = []
-        sections = s.get("sections", {})
-        if isinstance(sections, dict):
-            for sec_key, sec in sections.items():
-                lines.append(f"\nSection: {sec.get('title', sec_key)}")
-                for sub in sec.get("subsections", []):
-                    lines.append(f"  Subsection: {sub.get('title','')}")
-                    for f in sub.get("fields", []):
-                        req = "[required]" if f.get("required") else ""
-                        lines.append(f"    - {f.get('label','')} ({f.get('key','')}): {f.get('type','')} {req}")
-                for f in sec.get("fields", []):
+def _summarise_schema(s: dict) -> str:
+    if not isinstance(s, dict): return ""
+    lines = []
+    sections = s.get("sections", {})
+    if isinstance(sections, dict):
+        for sec_key, sec in sections.items():
+            lines.append(f"\nSection: {sec.get('title', sec_key)}")
+            for f in sec.get("fields", []):
+                req = "[required]" if f.get("required") else ""
+                lines.append(f"  - {f.get('label','')} (key: {f.get('key','')}): {f.get('type','')} {req}")
+            for sub in sec.get("subsections", []):
+                lines.append(f"  Subsection: {sub.get('title','')}")
+                for f in sub.get("fields", []):
                     req = "[required]" if f.get("required") else ""
-                    lines.append(f"  - {f.get('label','')} ({f.get('key','')}): {f.get('type','')} {req}")
-        elif isinstance(sections, list):
-            for sec in sections:
-                lines.append(f"\nSection: {sec.get('title', sec.get('id', ''))}")
-                for sub in sec.get("subsections", []):
-                    lines.append(f"  Subsection: {sub.get('title','')}")
-                    for f in sub.get("fields", []):
-                        req = "[required]" if f.get("required") else ""
-                        lines.append(f"    - {f.get('label','')} ({f.get('key','')}): {f.get('type','')} {req}")
-                for f in sec.get("fields", []):
+                    lines.append(f"    - {f.get('label','')} (key: {f.get('key','')}): {f.get('type','')} {req}")
+    elif isinstance(sections, list):
+        for sec in sections:
+            lines.append(f"\nSection: {sec.get('title', sec.get('id', ''))}")
+            for f in sec.get("fields", []):
+                req = "[required]" if f.get("required") else ""
+                lines.append(f"  - {f.get('label','')} (key: {f.get('key','')}): {f.get('type','')} {req}")
+            for sub in sec.get("subsections", []):
+                lines.append(f"  Subsection: {sub.get('title','')}")
+                for f in sub.get("fields", []):
                     req = "[required]" if f.get("required") else ""
-                    lines.append(f"  - {f.get('label','')} ({f.get('key','')}): {f.get('type','')} {req}")
-        return "\n".join(lines) if lines else json.dumps(s, indent=2)[:3000]
+                    lines.append(f"    - {f.get('label','')} (key: {f.get('key','')}): {f.get('type','')} {req}")
+    return "\n".join(lines) if lines else json.dumps(s, indent=2)[:3000]
 
-    schema_summary = summarise_schema(schema) if isinstance(schema, dict) else ""
+def build_global_prompt(user_msg: str) -> str:
+    """Prompt for the Global Agent (Main Dashboard)."""
+    return f"""You are the TradeDoc AI Global Assistant.
+You live on the main dashboard of the TradeDoc AI platform.
 
-    # Only show filled fields in context
-    current_data = current_data or {}
-    filled = {k: v for k, v in current_data.items() if v not in (None, "", [], {})}
-    filled_str = json.dumps(filled, indent=2) if filled else "No fields filled in yet."
-
-    # Conversation history (last 8 turns)
-    history_str = ""
-    for turn in history[-8:]:
-        role = turn.get("role", "user")
-        content = turn.get("content", turn.get("text", ""))
-        role_label = "User" if role == "user" else "Assistant"
-        history_str += f"{role_label}: {content}\n"
-
-    prompt = f"""You are TradeDoc AI Assistant — a friendly expert assistant built into the TradeDoc AI platform.
-You help users understand and fill in trade confirmation documents for financial derivatives.
-
-DOCUMENT TYPE: {doc_display}
-
-DOCUMENT SCHEMA (fields the user needs to fill):
-{schema_summary}
-
-CURRENT FORM DATA (filled so far):
-{filled_str}
-
-CONVERSATION HISTORY:
-{history_str}
-User: {message}
+USER MESSAGE:
+{user_msg}
 
 INSTRUCTIONS:
-- Answer helpfully and comprehensively. Explain legal and financial definitions in the context of {doc_display} clearly and professionally.
-- Keep responses detailed, rich, and highly informative (around 100-200 words).
-- If asked about a field, explain what it means in context of {doc_display}, give a realistic example value, and explain its legal/financial purpose.
-- Maintain a highly helpful, friendly, and expert trade advisor tone.
-- You are free to use clean markdown formatting (like bold **text** or bullet lists) to make the explanation easy to read and beautiful for the user!
-- Do NOT fabricate data. If truly unsure, say "Check with your counterparty."
+1. Answer general questions about the TradeDoc AI product, supported documents (IRS, CDS, FX NDF, Equity TRS), and platform capabilities.
+2. You HAVE NAVIGATION POWERS. If the user asks to go somewhere (e.g., "Take me to settings", "Go to new document", "Show my documents"), you must reply comprehensively and also include an action tag for the UI. (Valid routes are /dashboard, /dashboard/documents, /dashboard/settings, /dashboard/dispatch).
+3. Do not ask for document details, as you do not have access to any specific document context here.
+4. Keep the tone friendly, expert, and professional.
 """
 
-    return prompt
+def build_local_prompt(user_msg: str, doc_type: str, schema: dict, current_data: dict) -> str:
+    """Prompt for the Local Agent (PDF View / AI Mode Forms)."""
+    doc_display = _get_doc_display(doc_type)
+    schema_summary = _summarise_schema(schema)
+    filled_str = json.dumps(current_data, indent=2) if current_data else "No fields extracted/filled."
 
+    return f"""You are the TradeDoc AI Local Assistant.
+You are currently helping the user view a specific {doc_display} document.
 
-def build_mistake_check_prompt(doc_type: str, current_data: dict, schema: dict) -> str:
-    """Build prompt for Gemini to review ONLY filled form fields for mistakes. Never mention missing fields."""
-    doc_name_map = {
-        "fx_ndf":     "FX Non-Deliverable Forward (NDF)",
-        "irs":        "Interest Rate Swap (IRS) Confirmation",
-        "cds":        "Credit Default Swap (CDS) Confirmation",
-        "equity_trs": "Equity Total Return Swap (TRS) Confirmation",
-    }
-    doc_display = doc_name_map.get(doc_type, doc_type.upper())
-
-    # Extract field labels/keys for context
-    fields_info = []
-    sections = schema.get("sections", {})
-    if isinstance(sections, dict):
-        for sec_key, sec in sections.items():
-            for f in sec.get("fields", []):
-                fields_info.append(f"  - {f.get('label','')} ({f.get('key','')}): {'required' if f.get('required') else 'optional'}, type={f.get('type','')}")
-            for sub in sec.get("subsections", []):
-                for f in sub.get("fields", []):
-                    fields_info.append(f"  - {f.get('label','')} ({f.get('key','')}): {'required' if f.get('required') else 'optional'}, type={f.get('type','')}")
-    elif isinstance(sections, list):
-        for sec in sections:
-            for f in sec.get("fields", []):
-                fields_info.append(f"  - {f.get('label','')} ({f.get('key','')}): {'required' if f.get('required') else 'optional'}, type={f.get('type','')}")
-
-    filled = {k: v for k, v in (current_data or {}).items() if v not in (None, "", [], {})}
-    filled_str = json.dumps(filled, indent=2) if filled else "No fields filled."
-
-    return f"""You are a trade document validator. Review ONLY the FILLED fields in this {doc_display} form for errors. DO NOT comment on empty/missing fields — the user will ask about those separately.
-
-SCHEMA FIELDS:
-{chr(10).join(fields_info) if fields_info else 'No schema fields available'}
-
-FILLED DATA (review ONLY these — ignore anything not listed here):
+DOCUMENT EXTRACTED DATA:
 {filled_str}
 
-CHECK FOR (only among filled fields):
-1. Unusual or unrealistic amounts/dates
-2. Nonsensical placeholder text (e.g., "test", "xyz", random characters) instead of real names/values
-3. Inconsistent counterparty names across fields
-4. Type mismatches (e.g., text where a date is expected)
-5. Anything that looks like a copy-paste error or gibberish
+DOCUMENT SCHEMA (For context):
+{schema_summary}
 
-CRITICAL RULES:
-- ONLY review fields that appear in FILLED DATA above. If a field is empty, DO NOT mention it.
-- NEVER say "missing" or "not filled" or "absent" — that's a separate feature the user will invoke explicitly.
-- If you find issues in filled fields, explain clearly and politely what the issue is and suggest how to correct it.
-- If all filled fields look correct, say so clearly and warmly.
-- Keep it clean, highly readable, and professional.
-- You are free to use clean markdown formatting (like bolding or bullet points) to present your review."""
-
-
-def build_missing_fields_prompt(doc_type: str, current_data: dict, schema: dict) -> str | None:
-    """Build prompt for Gemini to list which required fields are still empty."""
-    doc_name_map = {
-        "fx_ndf":     "FX NonDe-liverable Forward (NDF)",
-        "irs":        "Interest Rate Swap (IRS) Confirmation",
-        "cds":        "Credit Default Swap (CDS) Confirmation",
-        "equity_trs": "Equity Total Return Swap (TRS) Confirmation",
-    }
-    doc_display = doc_name_map.get(doc_type, doc_type.upper())
-
-    # Collect all required fields and check which are unfilled
-    all_required = []
-    unfilled_required = []
-    sections = schema.get("sections", {})
-    if isinstance(sections, dict):
-        for sec_key, sec in sections.items():
-            sec_title = sec.get("title", sec_key)
-            for f in sec.get("fields", []):
-                if f.get("required"):
-                    key = f.get("key", "")
-                    label = f.get("label", key)
-                    all_required.append((sec_title, label, key))
-                    if not current_data.get(key) or current_data.get(key) in (None, "", [], {}):
-                        unfilled_required.append((sec_title, label, key))
-            for sub in sec.get("subsections", []):
-                for f in sub.get("fields", []):
-                    if f.get("required"):
-                        key = f.get("key", "")
-                        label = f.get("label", key)
-                        all_required.append((sec_title, label, key))
-                        if not current_data.get(key) or current_data.get(key) in (None, "", [], {}):
-                            unfilled_required.append((sec_title, label, key))
-    elif isinstance(sections, list):
-        for sec in sections:
-            sec_title = sec.get("title", sec.get("id", ""))
-            for f in sec.get("fields", []):
-                if f.get("required"):
-                    key = f.get("key", "")
-                    label = f.get("label", key)
-                    all_required.append((sec_title, label, key))
-                    if not current_data.get(key) or current_data.get(key) in (None, "", [], {}):
-                        unfilled_required.append((sec_title, label, key))
-            for sub in sec.get("subsections", []):
-                for f in sub.get("fields", []):
-                    if f.get("required"):
-                        key = f.get("key", "")
-                        label = f.get("label", key)
-                        all_required.append((sec_title, label, key))
-                        if not current_data.get(key) or current_data.get(key) in (None, "", [], {}):
-                            unfilled_required.append((sec_title, label, key))
-
-    total_required = len(all_required)
-    missing_count = len(unfilled_required)
-
-    if missing_count == 0:
-        return None  # No missing required fields — caller should handle
-
-    missing_lines = "\n".join([f"  - {label} ({key}) [Section: {sec}]" for sec, label, key in unfilled_required])
-    all_lines = "\n".join([f"  - {label} ({key}) [Section: {sec}]" for sec, label, key in all_required])
-
-    return f"""The user is filling a {doc_display} form and wants to know which required fields are still empty.
-
-ALL REQUIRED FIELDS ({total_required} total):
-{all_lines}
-
-MISSING REQUIRED FIELDS ({missing_count} remaining):
-{missing_lines}
-
-TASK: Tell the user concisely which fields they still need to fill. Group by section if possible.
-
-CRITICAL RULES:
-- List only the missing required fields. Be specific with field names.
-- Group by section for readability (e.g., "In Party Information: Counterparty Name, Execution Date").
-- Keep it CRISP — 2-4 sentences max.
-- If only 1-2 fields remain, make it encouraging: "Almost done! Just fill in..."
-- Plain text ONLY — no markdown, no bold, no bullet lists, no headings."""
-
-
-def build_field_explain_prompt(doc_type: str, user_msg: str, schema: dict) -> str:
-    """Build prompt for Gemini to explain what a form field means."""
-    doc_name_map = {
-        "fx_ndf":     "FX Non-Deliverable Forward (NDF)",
-        "irs":        "Interest Rate Swap (IRS) Confirmation",
-        "cds":        "Credit Default Swap (CDS) Confirmation",
-        "equity_trs": "Equity Total Return Swap (TRS) Confirmation",
-    }
-    doc_display = doc_name_map.get(doc_type, doc_type.upper())
-
-    # Extract all field labels/keys for Gemini to find the right one
-    fields_summary = []
-    sections = schema.get("sections", {})
-    if isinstance(sections, dict):
-        for sec_key, sec in sections.items():
-            for f in sec.get("fields", []):
-                fields_summary.append(f"{f.get('label','')} (key: {f.get('key','')}, type: {f.get('type','')})")
-            for sub in sec.get("subsections", []):
-                for f in sub.get("fields", []):
-                    fields_summary.append(f"{f.get('label','')} (key: {f.get('key','')}, type: {f.get('type','')})")
-    elif isinstance(sections, list):
-        for sec in sections:
-            for f in sec.get("fields", []):
-                fields_summary.append(f"{f.get('label','')} (key: {f.get('key','')}, type: {f.get('type','')})")
-
-    return f"""The user is filling a {doc_display} form and is asking about a specific field.
-
-USER QUESTION: "{user_msg}"
-
-AVAILABLE FIELDS IN THIS FORM:
-{chr(10).join(fields_summary) if fields_summary else 'No fields available'}
+USER MESSAGE:
+{user_msg}
 
 INSTRUCTIONS:
-1. ALWAYS identify and explain the closest matching field from the list. Pick the best match.
-2. Explain what it means clearly in the context of {doc_display}.
-3. Provide its legal, operational, or financial significance.
-4. Give a realistic, high-fidelity example value.
-5. If it's a select/dropdown field, list the available options clearly.
-6. Keep the response detailed, clean, and professional (around 80-120 words).
-7. You may use clean markdown formatting (like bolding) to make it easy to read and highly professional."""
+1. You DO NOT HAVE navigation powers. If the user asks to navigate, politely decline and inform them they can use the sidebar.
+2. Answer questions strictly based on the DOCUMENT EXTRACTED DATA provided above. 
+3. If the user asks "Who are the parties?", "What is the date?", etc., provide the actual values from the data, NOT the schema definition.
+4. Help the user verify if the AI extracted the document correctly.
+5. If the user asks something not present in the data, state clearly that it is not in the current document data.
+6. Use clean markdown formatting (like bolding or bullet points) to present your answers clearly.
+"""
+
+def build_assistive_prompt(user_msg: str, doc_type: str, schema: dict, current_data: dict, active_field: str) -> str:
+    """Prompt for the Assistive Local Agent (Manual Mode Forms)."""
+    doc_display = _get_doc_display(doc_type)
+    schema_summary = _summarise_schema(schema)
+    filled = {k: v for k, v in (current_data or {}).items() if v not in (None, "", [], {})}
+    filled_str = json.dumps(filled, indent=2) if filled else "No fields filled yet."
+    active_field_str = f"The user's cursor is currently focused on the field with key: '{active_field}'." if active_field else "The user is not currently focused on any specific field."
+
+    return f"""You are the TradeDoc AI Assistive Form Assistant.
+You are currently helping the user manually fill out a {doc_display} form.
+
+USER CONTEXT:
+{active_field_str}
+
+FILLED FORM DATA SO FAR:
+{filled_str}
+
+FORM SCHEMA DEFINITIONS:
+{schema_summary}
+
+USER MESSAGE:
+{user_msg}
+
+INSTRUCTIONS:
+You are a highly aware form-filling copilot. You have special functionalities unlocked based on the user's intent:
+
+1. CHECK FOR ERRORS: If the user asks to review or check for mistakes, look ONLY at the FILLED FORM DATA. Check for typos, unusual amounts, placeholder text, or nonsensical strings. Explain issues politely. Do not mention empty fields.
+2. CHECK MISSING FIELDS: If the user asks what is missing or left to fill, compare the FILLED FORM DATA against the required fields in the FORM SCHEMA DEFINITIONS. List only the required fields that are still empty, grouped by section.
+3. EXPLAIN FIELDS: If the user asks about a specific field (or asks generally while focused on the {active_field}), explain its legal and financial significance in the context of a {doc_display}. Give a realistic example of what should be typed there.
+4. GENERAL HELP: For any other questions, provide expert financial guidance on creating this document. 
+5. NO NAVIGATION: You cannot navigate the platform. Stick to form assistance.
+
+Keep your responses highly informative, professional, and well-formatted using markdown.
+"""

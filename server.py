@@ -965,55 +965,31 @@ def api_chat():
         doc_type = body.get("doc_type")
         schema = body.get("schema")
         current_data = body.get("current_data")
-        scope = body.get("scope", "global")  # "local" = ChatSidebar form assistant, "global" = ChatCopilot
-        stream = body.get("stream", False)   # SSE streaming for ChatGPT-like real-time output
+        active_field = body.get("active_field")
+        agent_type = body.get("agent_type", "global")
+        stream = body.get("stream", False)
 
-        # ── Local Scope (ChatSidebar — no DB, no session) ──
-        if scope == "local" and doc_type and schema:
-            msg_lower = user_msg.lower()
+        prompt = ""
+        action = None
+        reply = ""
 
-            # Detect intent: missing fields
-            is_missing_check = any(kw in msg_lower for kw in [
-                "what's missing", "whats missing", "what is missing",
-                "missing fields", "remaining", "still need", "left to fill",
-                "not filled", "empty fields", "what else", "what do i need"
-            ])
-            # Detect intent: mistake_check (only review filled, never mention missing)
-            is_mistake_check = any(kw in msg_lower for kw in [
-                "check", "mistake", "review", "verify", "error",
-                "wrong", "correct", "any issues", "look over"
-            ]) and not is_missing_check  # Don't route "what's missing" to mistake check
-            # Detect intent: field_explain
-            is_field_explain = any(kw in msg_lower for kw in [
-                "what does", "what is", "explain", "mean",
-                "definition", "define", "purpose of"
-            ])
-
-            if is_missing_check and current_data is not None:
-                from agents.assistant_agent import build_missing_fields_prompt
-                prompt = build_missing_fields_prompt(doc_type, current_data, schema)
-                if prompt is None:
-                    # No missing required fields — craft a simple response
-                    reply = "All required fields are filled. You're good to go!"
-                    if not stream:
-                        return jsonify({"reply": reply, "action": None, "session": None, "message": None})
-                    def generate_empty():
-                        yield f"data: {json.dumps({'token': reply})}\n\n"
-                        yield f"data: {json.dumps({'done': True, 'reply': reply, 'action': None})}\n\n"
-                    return Response(generate_empty(), mimetype="text/event-stream",
-                        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"})
-            elif is_mistake_check and current_data:
-                from agents.assistant_agent import build_mistake_check_prompt
-                prompt = build_mistake_check_prompt(doc_type, current_data, schema)
-            elif is_field_explain:
-                from agents.assistant_agent import build_field_explain_prompt
-                prompt = build_field_explain_prompt(doc_type, user_msg, schema)
+        if agent_type == "assistive":
+            from agents.assistant_agent import build_assistive_prompt
+            prompt = build_assistive_prompt(user_msg, doc_type, schema, current_data, active_field)
+        elif agent_type == "local":
+            from agents.assistant_agent import build_local_prompt
+            prompt = build_local_prompt(user_msg, doc_type, schema, current_data)
+        else: # global
+            fast_action = _detect_fast_navigation(user_msg)
+            if fast_action and not re.search(r"\?", user_msg):
+                action = fast_action
+                prompt = None
+                reply = f"Sure, opening {fast_action.replace('-', ' ')} for you."
             else:
-                # Generic local query — use existing assistant prompt with empty history
-                from agents.assistant_agent import build_assistant_prompt
-                prompt = build_assistant_prompt(user_msg, doc_type, schema, current_data or {}, [])
+                from agents.assistant_agent import build_global_prompt
+                prompt = build_global_prompt(user_msg)
 
-            # ── SSE Streaming path ──
+        if prompt:
             if stream:
                 def generate():
                     full_text = ""
@@ -1021,9 +997,12 @@ def api_chat():
                         for chunk in call_groq_stream(prompt):
                             full_text += chunk
                             yield f"data: {json.dumps({'token': chunk})}\n\n"
-                        # Send final message with cleaned full text + action extraction
-                        clean_text, action = _extract_chat_action(full_text, user_msg)
-                        yield f"data: {json.dumps({'done': True, 'reply': clean_text, 'action': action})}\n\n"
+                        clean_text, parsed_action = _extract_chat_action(full_text, user_msg)
+                        if agent_type == "global" and parsed_action:
+                            pass # Action allowed
+                        else:
+                            parsed_action = None # Strip action for non-global agents
+                        yield f"data: {json.dumps({'done': True, 'reply': clean_text, 'action': parsed_action})}\n\n"
                     except Exception as e:
                         yield f"data: {json.dumps({'error': str(e)[:200]})}\n\n"
 
@@ -1037,42 +1016,16 @@ def api_chat():
                     }
                 )
 
-            # ── Non-streaming path (fallback) ──
+            # Non-streaming fallback
             reply = call_groq(prompt)
-            reply, _ = _extract_chat_action(reply, user_msg)
-
-            return jsonify({
-                "reply": reply,
-                "action": None,
-                "session": None,
-                "message": None,
-            })
-
-        # ── Global Scope (ChatCopilot — 100% Stateless & History-Free to Save Costs) ──
-        # Bypassing all MongoDB writes/reads for conversations, using empty lists for history.
-        session_id = body.get("session_id") or "stateless-session"
-        
-        # 1. Fast-Track Navigation (Skip LLM for simple "go to" commands)
-        fast_action = _detect_fast_navigation(user_msg)
-        if fast_action and not re.search(r"\?", user_msg):
-            reply = f"Sure, opening {fast_action.replace('-', ' ')} for you."
-            action = fast_action
-        else:
-            # 2. Regular AI Response with empty history []
-            if doc_type and schema and current_data is not None:
-                from agents.assistant_agent import build_assistant_prompt
-                prompt = build_assistant_prompt(user_msg, doc_type, schema, current_data, [])
-            else:
-                prompt = _build_chat_prompt(user_msg, [])
-
-            reply = call_groq(prompt)
-            reply, action = _extract_chat_action(reply, user_msg)
-
-        if action:
-            print(f"  🚀 Navigation detected: {action}")
+            reply, parsed_action = _extract_chat_action(reply, user_msg)
+            if agent_type == "global" and parsed_action:
+                action = parsed_action
+                print(f"  🚀 Navigation detected: {action}")
 
         # Construct stateless mock structures to remain fully compatible with UI expectations
         now_ts = _iso_now()
+        session_id = body.get("session_id") or "stateless-session"
         session_data = {
             "id": session_id,
             "title": "Chat",
@@ -2072,7 +2025,7 @@ def send_email_via_resend(to_email, subject, html_content, attachment_bytes=None
         return False
 
 
-def create_docuseal_template(pdf_bytes, filename, trade_name):
+def create_docuseal_template(pdf_bytes, filename, trade_name, banker_signed=False):
     """
     Uploads a PDF to DocuSeal to create a new template.
     Returns the template ID and editor/preview URL.
@@ -2099,7 +2052,7 @@ def create_docuseal_template(pdf_bytes, filename, trade_name):
                 "name": filename
             }
         ],
-        "submitters": [
+        "submitters": [{"role": "Counterparty"}] if banker_signed else [
             {
                 "role": "Sender"
             },
@@ -2123,7 +2076,7 @@ def create_docuseal_template(pdf_bytes, filename, trade_name):
         return None
 
 
-def create_docuseal_submission(template_id, sender_email, signer_email):
+def create_docuseal_submission(template_id, sender_email, signer_email, banker_signed=False):
     """
     Creates a submission for a template, assigning roles for signing.
     """
@@ -2142,6 +2095,11 @@ def create_docuseal_submission(template_id, sender_email, signer_email):
         "template_id": template_id,
         "send_email": True,
         "submitters": [
+            {
+                "role": "Counterparty",
+                "email": signer_email
+            }
+        ] if banker_signed else [
             {
                 "role": "Sender",
                 "email": sender_email
@@ -2230,7 +2188,7 @@ def api_get_builder_token(doc_id):
             if not pdf_bytes:
                 return jsonify({"error": "Compiled PDF file could not be found. Please generate the PDF first."}), 404
                 
-            template = create_docuseal_template(pdf_bytes, pdf_filename or "trade.pdf", doc.get("name"))
+            template = create_docuseal_template(pdf_bytes, pdf_filename or "trade.pdf", doc.get("name"), doc.get("banker_signed", False))
             if not template:
                 return jsonify({"error": "Failed to upload document to DocuSeal"}), 500
                 
@@ -2547,7 +2505,7 @@ def api_dispatch_document(doc_id):
         else:
             template_id = doc.get("docuseal_template_id")
             if not template_id:
-                template = create_docuseal_template(pdf_bytes, pdf_filename or "trade.pdf", doc.get("name"))
+                template = create_docuseal_template(pdf_bytes, pdf_filename or "trade.pdf", doc.get("name"), doc.get("banker_signed", False))
                 if not template:
                     return jsonify({"error": "Failed to upload document to DocuSeal"}), 500
                 template_id = template.get("id")
@@ -2555,7 +2513,7 @@ def api_dispatch_document(doc_id):
                 collection.update_one({"_id": oid}, {"$set": {"docuseal_template_id": template_id}})
             
             sender_email = g.current_user.get("email")
-            submission = create_docuseal_submission(template_id, sender_email, signer_email)
+            submission = create_docuseal_submission(template_id, sender_email, signer_email, doc.get("banker_signed", False))
             if not submission:
                 return jsonify({"error": "Failed to create DocuSeal signature request"}), 500
                 

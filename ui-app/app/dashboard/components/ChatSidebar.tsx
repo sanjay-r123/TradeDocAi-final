@@ -295,7 +295,8 @@ export default function ChatSidebar({
           },
           body: JSON.stringify({
             message: text,
-            scope: 'local',
+            agent_type: 'assistive',
+            active_field: activeFieldKey || undefined,
             stream: true,
             doc_type: docType || undefined,
             schema: schema || undefined,

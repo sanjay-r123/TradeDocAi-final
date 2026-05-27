@@ -272,7 +272,7 @@ export default function ChatCopilot({ onNavigate, docType, schema, currentData }
         doc_type: docType || undefined,
         schema: schema || undefined,
         current_data: currentData || undefined,
-        scope: docType ? 'local' : 'global',
+        agent_type: docType ? 'local' : 'global',
       };
 
       const response = await fetch(`${API_BASE}/api/chat`, {

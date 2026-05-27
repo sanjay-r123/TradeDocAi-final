@@ -136,12 +136,20 @@ def _escape_latex(data):
             '~': r'\textasciitilde{}',
             '^': r'\textasciicircum{}'
         }
-        # Special logic to avoid double escaping already escaped percentages (common in finance)
         res = data
+        
+        # 1. Temporarily hide already-escaped characters
         for char, escaped in chars.items():
-            # If the character is already preceded by a backslash, skip it
-            if f"\\{char}" not in res:
-                res = res.replace(char, escaped)
+            res = res.replace(escaped, f"__ESCAPED_TOKEN_{ord(char)}__")
+            
+        # 2. Escape all remaining raw characters
+        for char, escaped in chars.items():
+            res = res.replace(char, escaped)
+            
+        # 3. Restore the originally escaped characters
+        for char, escaped in chars.items():
+            res = res.replace(f"__ESCAPED_TOKEN_{ord(char)}__", escaped)
+            
         return res
     return data
 

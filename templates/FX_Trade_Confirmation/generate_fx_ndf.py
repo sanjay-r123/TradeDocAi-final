@@ -248,12 +248,26 @@ def _escape_latex(data):
     escaped = {}
     for key, value in data.items():
         if isinstance(value, str):
+            # Temporarily replace existing escaped chars so we don't double-escape
             value = value.replace('\\%', '__ESCAPED_PCT__')
-            value = value.replace('%', '\\%')
-            value = value.replace('__ESCAPED_PCT__', '\\%')
             value = value.replace('\\&', '__ESCAPED_AMP__')
+            value = value.replace('\\$', '__ESCAPED_DOL__')
+            value = value.replace('\\#', '__ESCAPED_HASH__')
+            value = value.replace('\\_', '__ESCAPED_UND__')
+            
+            # Escape raw special characters
+            value = value.replace('%', '\\%')
             value = value.replace('&', '\\&')
+            value = value.replace('$', '\\$')
+            value = value.replace('#', '\\#')
+            value = value.replace('_', '\\_')
+            
+            # Restore previously escaped chars
+            value = value.replace('__ESCAPED_PCT__', '\\%')
             value = value.replace('__ESCAPED_AMP__', '\\&')
+            value = value.replace('__ESCAPED_DOL__', '\\$')
+            value = value.replace('__ESCAPED_HASH__', '\\#')
+            value = value.replace('__ESCAPED_UND__', '\\_')
             escaped[key] = value
         elif isinstance(value, list):
             escaped[key] = [_escape_latex_item(item) for item in value]
@@ -265,9 +279,9 @@ def _escape_latex(data):
 def _escape_latex_item(item):
     """Escape LaTeX chars in a list item (string or dict)."""
     if isinstance(item, str):
-        return item.replace('%', '\\%').replace('&', '\\&')
+        return item.replace('%', '\\%').replace('&', '\\&').replace('$', '\\$').replace('#', '\\#').replace('_', '\\_')
     elif isinstance(item, dict):
-        return {k: v.replace('%', '\\%').replace('&', '\\&') if isinstance(v, str) else v
+        return {k: (v.replace('%', '\\%').replace('&', '\\&').replace('$', '\\$').replace('#', '\\#').replace('_', '\\_') if isinstance(v, str) else v)
                 for k, v in item.items()}
     return item
 
