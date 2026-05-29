@@ -32,7 +32,9 @@ def _get_client():
         else:
             # Fall back to using standard Google Application Default Credentials (Vertex AI service account)
             # The SDK automatically uses the GOOGLE_APPLICATION_CREDENTIALS env variable pointing to your JSON key
-            _client = genai.Client(vertexai=True)
+            project = os.getenv("GOOGLE_CLOUD_PROJECT")
+            location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+            _client = genai.Client(vertexai=True, project=project, location=location)
     return _client
 
 
