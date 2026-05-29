@@ -19,7 +19,7 @@ from google.genai import types
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(_PROJECT_ROOT / ".env")
 
-MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 _client = None
 
 
@@ -49,7 +49,7 @@ def call_gemini(prompt: str, max_retries: int = 3, model_name: str | None = None
     """
     primary_model = model_name or MODEL
     # If the primary is a 2.x model, fallback to gemini-flash-latest if busy
-    fallback_model = "gemini-flash-latest" if ("2.0" in primary_model or "2.5" in primary_model) else None
+    fallback_model = "gemini-2.5-flash" if ("2.0" in primary_model or "2.5" in primary_model or "3." in primary_model) else None
     
     # Build GenerateContentConfig if generation params provided
     config = types.GenerateContentConfig(**generation_config) if generation_config else None
@@ -138,7 +138,7 @@ def call_gemini_with_pdf(prompt: str, pdf_path: str, max_retries: int = 3, model
     Handles high demand (503) and rate limits (429) with retries and fallback.
     """
     primary_model = model_name or MODEL
-    fallback_model = "gemini-flash-latest" if ("2.0" in primary_model or "2.5" in primary_model) else None
+    fallback_model = "gemini-2.5-flash" if ("2.0" in primary_model or "2.5" in primary_model or "3." in primary_model) else None
     
     with open(pdf_path, "rb") as f:
         pdf_bytes = f.read()
