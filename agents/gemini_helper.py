@@ -48,7 +48,7 @@ def call_gemini(prompt: str, max_retries: int = 3, model_name: str | None = None
                        response_mime_type (e.g. "application/json").
     """
     primary_model = model_name or MODEL
-    # If the primary is a 2.x model, fallback to gemini-flash-latest if busy
+    # If the primary is a 2.x model, fallback to gemini-2.5-flash if busy
     fallback_model = "gemini-2.5-flash" if ("2.0" in primary_model or "2.5" in primary_model or "3." in primary_model) else None
     
     # Build GenerateContentConfig if generation params provided

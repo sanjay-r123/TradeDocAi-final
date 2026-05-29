@@ -14,7 +14,7 @@ def test_validation_missing_pdf():
     state = {
         "email_text": "Some text",
         "pdf_path": "/non/existent/path.pdf",
-        "model": "gemini-flash-latest"
+        "model": "gemini-2.5-flash"
     }
     
     result = validation_graph.invoke(state)
@@ -26,7 +26,7 @@ def test_validation_empty_email():
     state = {
         "email_text": "",
         "pdf_path": str(_ROOT / "README.md"), # just any existing file
-        "model": "gemini-flash-latest"
+        "model": "gemini-2.5-flash"
     }
     
     result = validation_graph.invoke(state)

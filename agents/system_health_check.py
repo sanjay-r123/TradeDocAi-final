@@ -63,7 +63,7 @@ def run_check():
         
         extract_res = ai_create_graph.invoke({
             "email_text": TEST_EMAIL,
-            "model": "gemini-flash-latest"
+            "model": "gemini-2.5-flash"
         })
         duration = time.time() - start
         log(f"✅ Extraction Duration: {duration:.2f}s")
@@ -102,7 +102,7 @@ def run_check():
         val_res = validation_graph.invoke({
             "email_text": TEST_EMAIL,
             "pdf_path": pdf_path,
-            "model": "gemini-flash-latest"
+            "model": "gemini-2.5-flash"
         })
         duration = time.time() - start
         log(f"✅ Validation Duration: {duration:.2f}s")
@@ -120,7 +120,7 @@ def run_check():
         nav_msg = "go to cds form"
         history = []
         prompt = build_assistant_prompt(nav_msg, "irs", {}, {}, history)
-        reply = call_gemini(prompt, model_name="gemini-flash-latest")
+        reply = call_gemini(prompt, model_name="gemini-2.5-flash")
         
         from server import _extract_chat_action
         reply_text, action = _extract_chat_action(reply, nav_msg)
@@ -135,7 +135,7 @@ def run_check():
         form_msg = "what is my notional?"
         current_data = {"notional_amount": "USD 100,000,000"}
         prompt = build_assistant_prompt(form_msg, "irs", {}, current_data, history)
-        reply = call_gemini(prompt, model_name="gemini-flash-latest")
+        reply = call_gemini(prompt, model_name="gemini-2.5-flash")
         log(f"   - Message: \"{form_msg}\"")
         log(f"   - Bot Reply: {reply[:100]}...")
         if "100,000,000" in reply:

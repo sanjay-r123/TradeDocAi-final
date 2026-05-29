@@ -32,7 +32,7 @@ def test_extraction_logic_isolated(mock_call):
         "email_text": "Dummy email content",
         "doc_type": "irs",
         "exhibit": "II-A",
-        "model": "gemini-flash-latest"
+        "model": "gemini-2.5-flash"
     }
     
     # Run the agent function directly
@@ -53,7 +53,7 @@ def test_extraction_error_isolated(mock_call):
     state: DocForgeState = {
         "email_text": "Dummy",
         "doc_type": "irs",
-        "model": "gemini-flash-latest"
+        "model": "gemini-2.5-flash"
     }
     
     result = extract_trade_data(state)

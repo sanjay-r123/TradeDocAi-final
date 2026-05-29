@@ -447,7 +447,7 @@ export default function DashboardPage() {
     if (!currentPdfFilename) { showToast('⚠️ Generate PDF first'); return; }
     showLoading('Running validation...', 'Comparing PDF against email with AI');
     try {
-      const preferredModel = localStorage.getItem('preferredModel') || 'gemini-flash-latest';
+      const preferredModel = localStorage.getItem('preferredModel') || 'gemini-2.5-flash';
       const body: Record<string, string> = {
         email_text: aiEmailText,
         pdf_filename: currentPdfFilename,
@@ -485,7 +485,7 @@ export default function DashboardPage() {
     if (!aiEmailText.trim()) { showToast('Please paste text first'); return; }
     showLoading('Analyzing email...', 'Classifying document type');
     try {
-      const preferredModel = modelChoice || localStorage.getItem('preferredModel') || 'gemini-flash-latest';
+      const preferredModel = modelChoice || localStorage.getItem('preferredModel') || 'gemini-2.5-flash';
       const response = await fetch(`${API}/ai/extract`, {
         method: 'POST',
         headers: authHeaders({ 'Content-Type': 'application/json' }),

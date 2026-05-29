@@ -159,7 +159,7 @@ export default function AIExtractPanel({ text, onChange, onExtract, onCancel }: 
               Cancel
             </button>
             <button
-              onClick={() => onExtract(modelMode === 'fast' ? 'gemini-flash-latest' : 'gemini-2.5-pro')}
+              onClick={() => onExtract(modelMode === 'fast' ? 'gemini-2.5-flash' : 'gemini-2.5-pro')}
               disabled={!text.trim()}
               className="flex-[2] py-3.5 rounded-2xl font-bold text-[15px] flex items-center justify-center gap-2.5 transition-all duration-300"
               style={{
