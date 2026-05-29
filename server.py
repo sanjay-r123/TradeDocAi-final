@@ -1634,8 +1634,6 @@ def api_ai_extract():
     Returns classified doc type and extracted JSON.
     """
     try:
-        if not os.environ.get("GEMINI_API_KEY"):
-            return jsonify({"error": "AI service is not configured. Set GEMINI_API_KEY."}), 503
         body = _json_body()
         email_text = body.get("email_text", "")
 
@@ -1881,8 +1879,6 @@ def api_validate():
     Supports PDFs from temp disk (pdf_file_id) or GCS (gcs_object_path).
     """
     try:
-        if not os.environ.get("GEMINI_API_KEY"):
-            return jsonify({"error": "AI service is not configured. Set GEMINI_API_KEY."}), 503
         body = _json_body()
         email_text = body.get("email_text", "")
         pdf_path, pdf_filename = _resolve_generated_pdf(body)
