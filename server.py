@@ -559,11 +559,77 @@ MONGO_DB_NAME = os.getenv("MONGO_DB_NAME")
 app.config["MONGO_URI"] = MONGO_URI
 app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "dev-secret-12345")
 
-# Initialize Limiter
+# ═══════════════════════════════════════════════════════════════════════════════
+# RATE LIMITER — Per-User Auth-Based (Cloud Run Safe)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# ROOT CAUSE OF PREVIOUS CRASH:
+#   1. Static assets (JS/CSS/images) were going through Flask → counted against
+#      the IP's quota. Browser loads 30-40 files on page open → instant 429.
+#   2. Cloud Run sits behind Google LB → get_remote_address() returns the LB IP
+#      → ALL users shared ONE counter → a few reloads instantly hit 100/hour.
+#
+# SOLUTION:
+#   - Key = MongoDB user_id from auth token (per-user, not per-IP)
+#   - Static files / Next.js chunks fully EXEMPT (never rate-limited)
+#   - Fallback to real client IP (from X-Forwarded-For) for public routes
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Prefixes and extensions that should NEVER be rate-limited (static assets)
+_EXEMPT_PREFIXES = (
+    "/_next/",       # Next.js JS/CSS chunks
+    "/static/",      # Generic static dir
+    "/favicon",      # Browser favicon requests
+)
+_EXEMPT_EXTENSIONS = (
+    ".js", ".css", ".svg", ".png", ".jpg", ".jpeg",
+    ".webp", ".ico", ".woff", ".woff2", ".ttf", ".map",
+)
+
+def _rate_limit_key():
+    """
+    Combined key = user_id + real client IP.
+    - Static assets always return a fixed exempt key → never counted.
+    - Authenticated users are keyed by user_id + IP so each person gets
+      their own independent counter regardless of shared networks.
+    - Unauthenticated routes fall back to the real client IP extracted
+      from X-Forwarded-For (set by Cloud Run's Load Balancer).
+    """
+    path = request.path
+
+    # Static assets — fixed key so they never count against any user's quota
+    if path.startswith(_EXEMPT_PREFIXES) or path.endswith(_EXEMPT_EXTENSIONS):
+        return "exempt-static"
+
+    # Get real client IP from X-Forwarded-For (Cloud Run LB sets this)
+    forwarded_for = request.headers.get("X-Forwarded-For", "")
+    real_ip = get_remote_address()
+    if forwarded_for:
+        parsed_ip = forwarded_for.split(",")[0].strip()
+        if parsed_ip:
+            real_ip = parsed_ip
+
+    # Try to identify user from Bearer token
+    user_id = None
+    try:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header.split(" ", 1)[1].strip()
+            payload = TOKEN_SERIALIZER.loads(token, max_age=AUTH_MAX_AGE_SECONDS)
+            user_id = payload.get("user_id")
+    except Exception:
+        pass  # token missing / expired / invalid — fall back to IP
+
+    if user_id:
+        return f"user:{user_id}:ip:{real_ip}"
+    return f"ip:{real_ip}"
+
 limiter = Limiter(
-    key_func=get_remote_address,
+    key_func=_rate_limit_key,
     app=app,
-    default_limits=["500 per day", "100 per hour"],
+    # Generous global default — AI routes have their own stricter limits.
+    # Static assets never count (exempt key above).
+    default_limits=["10000 per day", "3000 per hour"],
     storage_uri="memory://",
 )
 _mongo_client = None
