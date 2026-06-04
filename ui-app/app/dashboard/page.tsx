@@ -948,7 +948,7 @@ export default function DashboardPage() {
   }).length;
   const activeFieldLabel = getActiveFieldLabel();
 
-  const handleLogout = () => { clearSession(); router.push('/'); };
+  const handleLogout = () => { clearSession(); window.location.href = '/'; };
 
   return (
     <div className="flex h-[100dvh] overflow-hidden selection:bg-indigo-100" style={{ background: '#f8f9fc', fontFamily: "'DM Sans', system-ui, sans-serif" }}>
