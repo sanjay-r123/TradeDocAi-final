@@ -87,12 +87,13 @@ export default function SupportedDocs() {
     );
 
     // Ultra-Free Motion Spring - Maximum responsiveness for Tablet
-    const springX = useSpring(x, { stiffness: 180, damping: 15, restDelta: 0.001 });
+    const springX = useSpring(x, { stiffness: 180, damping: 25, restDelta: 0.01 });
 
     // Mobile Slider State
     const [mobileIndex, setMobileIndex] = useState(0);
 
     useEffect(() => {
+        if (typeof window !== 'undefined' && window.innerWidth >= 640) return; // desktop/tablet: not needed
         const interval = setInterval(() => {
             setMobileIndex(prev => (prev + 1) % DOC_CARDS.length);
         }, 5000); // 5 sec automatic slide

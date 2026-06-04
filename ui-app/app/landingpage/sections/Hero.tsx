@@ -10,7 +10,7 @@ export default function Hero() {
     const heroRef = useRef<HTMLElement>(null);
     const logoRef = useRef<HTMLDivElement>(null);
     const logoControls = useAnimationControls();
-    const isLogoInView = useInView(logoRef, { once: false, amount: 0.1 });
+    const isLogoInView = useInView(logoRef, { once: true, amount: 0.1 });
     const { scrollYProgress } = useScroll({ target: heroRef, offset: ['start start', 'end start'] });
     const heroY = useTransform(scrollYProgress, [0, 1], [0, 60]);
     const heroOpacity = useTransform(scrollYProgress, [0, 0.8], [1, 0]);

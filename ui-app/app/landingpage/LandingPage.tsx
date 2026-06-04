@@ -15,9 +15,6 @@ export default function LandingPage() {
             <style dangerouslySetInnerHTML={{ __html: `
         .font-display { font-family: var(--font-dm-serif-display), 'DM Serif Display', Georgia, serif; }
         .font-body { font-family: var(--font-dm-sans), 'DM Sans', system-ui, sans-serif; }
-
-        @property --glass-angle-1 { syntax: "<angle>"; inherits: true; initial-value: -75deg; }
-        @property --glass-angle-2 { syntax: "<angle>"; inherits: true; initial-value: -45deg; }
         
         .glass-btn-wrap {
           --anim--hover-time: 400ms;

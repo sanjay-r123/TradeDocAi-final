@@ -65,6 +65,7 @@ export function GlobeInteractive({
   const phiOffsetRef = useRef(0)
   const thetaOffsetRef = useRef(0)
   const isPausedRef = useRef(false)
+  const animationIdRef = useRef<number>(0)
 
   // Label positions projected to 2D
   const labelRefs = useRef<(HTMLDivElement | null)[]>([])
@@ -107,7 +108,6 @@ export function GlobeInteractive({
     if (!canvasRef.current) return
     const canvas = canvasRef.current
     let globe: ReturnType<typeof createGlobe> | null = null
-    let animationId: number
     let phi = 0
     let isMounted = true
 
@@ -165,7 +165,7 @@ export function GlobeInteractive({
           theta: 0.2 + thetaOffsetRef.current + dragOffset.current.theta,
         })
         updateLabels() // synchronized in same RAF frame — single loop
-        animationId = requestAnimationFrame(animate)
+        animationIdRef.current = requestAnimationFrame(animate)
       }
       animate()
       setTimeout(() => isMounted && canvas && (canvas.style.opacity = "1"))
@@ -187,7 +187,7 @@ export function GlobeInteractive({
     return () => {
       isMounted = false
       if (ro) ro.disconnect()
-      if (animationId) cancelAnimationFrame(animationId)
+      if (animationIdRef.current) cancelAnimationFrame(animationIdRef.current)
       if (globe) {
         globe.destroy()
         globe = null
