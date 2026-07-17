@@ -16,8 +16,8 @@ from groq import Groq
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(_PROJECT_ROOT / ".env")
 
-MODEL = os.getenv("GROQ_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
-FALLBACK_MODEL = "llama-3.3-70b-specdec"  # Standard highly capable Groq model
+MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+FALLBACK_MODEL = "llama-3.1-8b-instant"  # Fast Llama fallback when primary is rate-limited
 
 # Parse separate keys (e.g. GROQ_API_KEY_1, GROQ_API_KEY_2, etc.)
 _KEYS = []
@@ -76,7 +76,7 @@ def call_groq(prompt: str, max_retries: int = 5, model_name: str | None = None, 
     quota issues, etc.), it immediately rotates to the next key and retries seamlessly.
     """
     primary_model = model_name or MODEL
-    fallback_model = FALLBACK_MODEL if primary_model != FALLBACK_MODEL else "llama-3.1-8b-instant"
+    fallback_model = FALLBACK_MODEL if primary_model != FALLBACK_MODEL else "llama-3.3-70b-versatile"
 
     for attempt in range(max_retries):
         # Retrieve client for the current rotated key
@@ -131,7 +131,7 @@ def call_groq_stream(prompt: str, model_name: str | None = None, system_instruct
     quota issues, etc.), it immediately rotates to the next key and retries seamlessly.
     """
     primary_model = model_name or MODEL
-    fallback_model = FALLBACK_MODEL if primary_model != FALLBACK_MODEL else "llama-3.1-8b-instant"
+    fallback_model = FALLBACK_MODEL if primary_model != FALLBACK_MODEL else "llama-3.3-70b-versatile"
 
     stream = None
     for attempt in range(max_retries):
